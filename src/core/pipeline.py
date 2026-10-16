@@ -594,6 +594,7 @@ class StockAnalysisPipeline:
                 try:
                     fundamental_context = self.fetcher_manager.get_fundamental_context(
                         code,
+                        realtime_quote=realtime_quote,
                         budget_seconds=getattr(
                             self.config,
                             'fundamental_stage_timeout_seconds',
@@ -603,6 +604,15 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
                     fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
+
+            if not is_index and market == 'cn':
+                from data_provider.cn_public import merge_verified_context
+                verified = self.fetcher_manager.get_verified_cn_data(code, stock_name)
+                if isinstance(verified, dict):
+                    fundamental_context = merge_verified_context(fundamental_context, verified)
+                    logger.info('%s(%s) 免费数据补齐: %s', stock_name, code,
+                                {key: {'status': value.get('status'), 'reason': value.get('missing_reason'),
+                                       'errors': value.get('errors')} for key, value in verified.items()})
 
             if is_index and "belong_boards" in INDEX_SKIP_MODULES:
                 logger.debug(f"{stock_name}({code}) 指数目标跳过板块归属")
@@ -731,6 +741,12 @@ class StockAnalysisPipeline:
                         logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
             else:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
+
+            from data_provider.cn_public import evidence_text
+            verified = (fundamental_context or {}).get('verified_data') or {}
+            public_evidence = evidence_text(verified) if isinstance(verified, dict) else ''
+            if public_evidence:
+                news_context = '\n'.join(filter(None, [news_context, public_evidence]))
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             social_evidence_context: Optional[str] = None
@@ -1066,6 +1082,8 @@ class StockAnalysisPipeline:
                 'validation_issues': getattr(realtime_quote, 'validation_issues', None),
                 'freshness_status': getattr(realtime_quote, 'freshness_status', None),
                 'volume_ratio': volume_ratio,
+                'field_sources': getattr(realtime_quote, 'field_sources', None),
+                'cross_validation': getattr(realtime_quote, 'cross_validation', None),
                 'volume_ratio_desc': self._describe_volume_ratio(volume_ratio) if volume_ratio else '无数据',
                 'turnover_rate': getattr(realtime_quote, 'turnover_rate', None),
                 'pe_ratio': getattr(realtime_quote, 'pe_ratio', None),
@@ -1084,6 +1102,11 @@ class StockAnalysisPipeline:
             enhanced['realtime'] = {k: v for k, v in enhanced['realtime'].items() if v is not None}
         
         # 添加筹码分布
+        chip_enabled = getattr(self.config, 'enable_chip_distribution', None)
+        enhanced['chip_availability'] = {
+            'status': 'ok' if chip_data else 'disabled' if chip_enabled is False else 'missing',
+            'reason': None if chip_data else '现有配置关闭筹码分布取数' if chip_enabled is False else '未取得有效筹码数据',
+        }
         if chip_data:
             current_price = getattr(realtime_quote, 'price', 0) if realtime_quote else 0
             enhanced['chip'] = {
@@ -1529,6 +1552,11 @@ class StockAnalysisPipeline:
                 "report_language": report_language,
                 "fundamental_context": fundamental_context,
             }
+            if isinstance(fundamental_context, dict):
+                from data_provider.cn_public import evidence_text
+                public_evidence = evidence_text(fundamental_context.get('verified_data') or {})
+                if public_evidence:
+                    initial_context['news_context'] = public_evidence
             if isinstance(portfolio_context, dict):
                 initial_context["portfolio_context"] = dict(portfolio_context)
             if self.analysis_skills is not None:

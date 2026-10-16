@@ -282,7 +282,7 @@ class StockTrendAnalyzer:
         if len(df) >= 60:
             df['MA60'] = df['close'].rolling(window=60).mean()
         else:
-            df['MA60'] = df['MA20']  # 数据不足时使用 MA20 替代
+            df['MA60'] = 0.0  # 样本不足；不能把 MA20 冒充 MA60
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -433,8 +433,21 @@ class StockTrendAnalyzer:
         
         latest = df.iloc[-1]
         volumes = pd.to_numeric(df['volume'].iloc[-6:], errors='coerce')
-        if not np.isfinite(volumes).all() or (volumes < 0).any():
+        if not np.isfinite(volumes).all() or (volumes <= 0).any():
             return
+        if 'amount' in df and 'close' in df:
+            amounts = pd.to_numeric(df['amount'].iloc[-6:], errors='coerce')
+            closes = pd.to_numeric(df['close'].iloc[-6:], errors='coerce')
+            # Historical OHLC may be adjusted while turnover is not. Reject
+            # order-of-magnitude errors without treating dividend adjustment as
+            # a unit conversion or silently repairing the supplied observations.
+            active = volumes > 0
+            if (not np.isfinite(amounts).all() or (amounts < 0).any()
+                    or ((amounts > 0) != active).any()
+                    or not ((amounts[active] / volumes[active] / closes[active]).between(.1, 10)).all()):
+                result.volume_trend = '数据不足：成交量/成交额数量级不一致，未纳入评分'
+                result.risk_factors.append(result.volume_trend)
+                return
         vol_5d_avg = volumes.iloc[:-1].mean()
         
         if vol_5d_avg > 0:
@@ -691,7 +704,7 @@ class StockTrendAnalyzer:
             VolumeStatus.SHRINK_VOLUME_UP: 6,     # 无量上涨较差
             VolumeStatus.HEAVY_VOLUME_DOWN: 0,    # 放量下跌最差
         }
-        vol_score = volume_scores.get(result.volume_status, 8)
+        vol_score = volume_scores.get(result.volume_status, 0)
         score += vol_score
 
         if result.volume_status == VolumeStatus.SHRINK_VOLUME_DOWN:

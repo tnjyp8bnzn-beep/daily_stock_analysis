@@ -89,6 +89,7 @@ def _resolve_templates_dir() -> Path:
 
 from src.quote_provenance import provenance_lines
 from src.services.empty_news import empty_news_disclosure
+from src.report_consistency import verified_data_lines
 
 
 def render(
@@ -224,6 +225,7 @@ def render(
         "hold_count": hold_count,
         "labels": labels,
         "provenance_lines": provenance_lines,
+        "verified_data_lines": verified_data_lines,
         "report_language": report_language,
         "models_used": models_used,
         "show_llm_model": show_llm_model,

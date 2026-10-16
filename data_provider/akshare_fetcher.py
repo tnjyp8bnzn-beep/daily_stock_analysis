@@ -677,6 +677,9 @@ class AkshareFetcher(BaseFetcher):
 
             if df is not None and not df.empty:
                 logger.info(f"[API返回] ak.stock_zh_a_hist 成功: {len(df)} 行, 耗时 {api_elapsed:.2f}s")
+                if df is not None and '成交量' in df:
+                    df = df.copy()
+                    df['成交量'] = pd.to_numeric(df['成交量'], errors='coerce') * 100
                 return df
             else:
                 logger.warning(f"[API返回] ak.stock_zh_a_hist 返回空数据")
@@ -832,6 +835,9 @@ class AkshareFetcher(BaseFetcher):
             else:
                 logger.warning(f"[API返回] ak.fund_etf_hist_em 返回空数据, 耗时 {api_elapsed:.2f}s")
             
+            if df is not None and '成交量' in df:
+                df = df.copy()
+                df['成交量'] = pd.to_numeric(df['成交量'], errors='coerce') * 100
             return df
             
         except Exception as e:
@@ -1116,6 +1122,8 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            if source == 'tencent':
+                return self._get_stock_realtime_quote_tencent(stock_code)
             source_key = "akshare_etf"
             if not circuit_breaker.is_available(source_key):
                 logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")

@@ -112,6 +112,8 @@ def quote_metadata(context: dict) -> dict:
         # Latest quote is not promoted to an exchange-confirmed closing price.
         'price_type': 'latest_quote',
         'source': getattr(realtime.get('source'), 'value', realtime.get('source')),
+        'field_sources': realtime.get('field_sources') or {},
+        'cross_validation': realtime.get('cross_validation') or {},
     }
 
 
@@ -133,6 +135,14 @@ def provenance_lines(snapshot: dict, language: str = 'zh') -> list[str]:
     status = snapshot.get('freshness_status')
     if status:
         rows.append(('报价有效性' if language == 'zh' else 'Quote validity', str(status)))
+    cross = snapshot.get('cross_validation') or {}
+    if cross:
+        rows.append(('跨源价格核验' if language == 'zh' else 'Cross-source check',
+                     f"{cross.get('status')}；{cross.get('secondary_source')}={cross.get('secondary_price')}；"
+                     f"{cross.get('provider_timestamp') or unknown}"))
+    for field, provenance in (snapshot.get('field_sources') or {}).items():
+        rows.append((f'{field} 来源', f"{provenance.get('source')}；"
+                     f"{provenance.get('provider_timestamp') or unknown}；获取 {provenance.get('fetched_at') or unknown}"))
     quality = snapshot.get('market_data_validation') or {}
     if quality.get('issues') or quality.get('missing_fields'):
         detail = ', '.join(quality.get('issues', []) + quality.get('missing_fields', []))

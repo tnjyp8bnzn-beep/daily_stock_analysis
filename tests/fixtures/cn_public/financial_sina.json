@@ -1,0 +1,102 @@
+{
+  "result": {
+    "data": {
+      "report_list": {
+        "20260630": {
+          "rType": "合并期末",
+          "rCurrency": "CNY",
+          "data_source": "其他",
+          "is_audit": "未审计",
+          "publish_date": "20260820",
+          "is_exist_yoy": true,
+          "data": [
+            {
+              "item_field": "PARENETP",
+              "item_title": "归母净利润",
+              "item_value": "-118437769.220000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "f2",
+              "item_source": "lrb",
+              "item_number": "GJ1",
+              "item_group_no": 1,
+              "item_tongbi": -1.23537
+            },
+            {
+              "item_field": "BIZTOTINCO",
+              "item_title": "营业总收入",
+              "item_value": "2751024838.400000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "f2",
+              "item_source": "lrb",
+              "item_number": "GJ2",
+              "item_group_no": 1,
+              "item_tongbi": -0.25467
+            },
+            {
+              "item_field": "MANANETR",
+              "item_title": "经营现金流量净额",
+              "item_value": "647301141.750000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "f2",
+              "item_source": "llb",
+              "item_number": "GJ8",
+              "item_group_no": 1,
+              "item_tongbi": 0.28889
+            },
+            {
+              "item_field": "ROEWEIGHTED",
+              "item_title": "净资产收益率(ROE)",
+              "item_value": "-1.700000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "p2",
+              "item_source": "zyb",
+              "item_number": "GJ12",
+              "item_group_no": 1,
+              "item_tongbi": -1.23546
+            },
+            {
+              "item_field": "ROEWEIGHTED",
+              "item_title": "净资产收益率(ROE)",
+              "item_value": "-1.700000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "p2",
+              "item_source": "zyb",
+              "item_number": "GJ12",
+              "item_group_no": 3,
+              "item_tongbi": -1.23546
+            },
+            {
+              "item_field": "PARENETP",
+              "item_title": "归母净利润",
+              "item_value": "-118437769.220000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "f2",
+              "item_source": "lrb",
+              "item_number": "GJ1",
+              "item_group_no": 4,
+              "item_tongbi": -1.23537
+            },
+            {
+              "item_field": "BIZTOTINCO",
+              "item_title": "营业总收入",
+              "item_value": "2751024838.400000",
+              "item_display_type": 2,
+              "item_display": "小类",
+              "item_precision": "f2",
+              "item_source": "lrb",
+              "item_number": "GJ2",
+              "item_group_no": 4,
+              "item_tongbi": -0.25467
+            }
+          ]
+        }
+      }
+    }
+  }
+}

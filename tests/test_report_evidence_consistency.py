@@ -65,7 +65,8 @@ def test_distinct_explicit_warning_stop_and_reference_support_are_valid(warning)
     r = result(risk=warning + '；若跌破9.45元止损卖出')
     apply_report_consistency(r, context())
     assert 'stop_loss_validation' not in r.dashboard
-    assert r.dashboard['battle_plan']['sniper_points']['stop_loss'] == '9.45元'
+    assert r.dashboard['battle_plan']['sniper_points']['stop_loss'] == 9.45
+    assert r.dashboard['price_validation']['stop_loss']['original'] == '9.45元'
     assert warning in r.dashboard['battle_plan']['position_strategy']['risk_control']
     assert r.dashboard['risk_levels']['stop_loss']['price'] == 9.45
 
@@ -82,8 +83,10 @@ def test_rebound_reduction_and_profit_target_do_not_invalidate_a_downside_stop()
     ctx['realtime'] = {}
     apply_report_consistency(r, ctx)
     assert 'stop_loss_validation' not in r.dashboard
-    assert r.dashboard['battle_plan']['sniper_points']['stop_loss'] == '45.20元（跌破今日最低价需果断离场）'
-    assert r.dashboard['battle_plan']['sniper_points']['take_profit'] == '47.81元（MA5压力位，反抽至此减仓）'
+    assert r.dashboard['battle_plan']['sniper_points']['stop_loss'] == 45.2
+    assert r.dashboard['price_validation']['stop_loss']['original'] == '45.20元（跌破今日最低价需果断离场）'
+    assert r.dashboard['battle_plan']['sniper_points']['take_profit'] == 47.81
+    assert r.dashboard['price_validation']['take_profit']['original'] == '47.81元（MA5压力位，反抽至此减仓）'
 
 
 @pytest.mark.parametrize('field', ['analysis_summary', 'risk_warning', 'technical_analysis', 'volume_analysis',
