@@ -2005,7 +2005,7 @@ class GeminiAnalyzer:
                 "volume_ratio": 量比数值,
                 "volume_status": "放量/缩量/平量",
                 "turnover_rate": 换手率百分比,
-                "volume_meaning": "量能含义解读（如：缩量回调表示抛压减轻）"
+                "volume_meaning": "引用真实量比、比较口径与来源；缺失写数据不足，不能据此证实交易意图"
             },
             "chip_structure": {
                 "profit_ratio": 获利比例,
@@ -2193,7 +2193,7 @@ class GeminiAnalyzer:
                 "volume_ratio": 量比数值,
                 "volume_status": "放量/缩量/平量",
                 "turnover_rate": 换手率百分比,
-                "volume_meaning": "量能含义解读（如：缩量回调表示抛压减轻）"
+                "volume_meaning": "引用真实量比、比较口径与来源；缺失写数据不足，不能据此证实交易意图"
             },
             "chip_structure": {
                 "profit_ratio": 获利比例,
@@ -2373,7 +2373,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 "volume_ratio": volume ratio number,
                 "volume_status": "High volume/Low volume/Normal volume",
                 "turnover_rate": turnover rate percentage,
-                "volume_meaning": "Interpretation of volume (e.g. a low-volume pullback means selling pressure is easing)"
+                "volume_meaning": "Cite the actual ratio, denominator and source; missing data cannot establish volume or trading intent"
             },
             "chip_structure": {
                 "profit_ratio": profit ratio,
@@ -4740,6 +4740,9 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 language=report_language,
             )
             consistency_notes = trend.get('prompt_consistency_notes', [])
+            historical_ratio = trend.get('volume_ratio_5d')
+            ratio_label = 'Daily volume / previous five daily volumes average' if english else '当日量/前5日均量'
+            prompt += f"\n{ratio_label}: {historical_ratio if historical_ratio is not None else 'N/A'} (volume_ratio_5d)\n"
             if english:
                 signal_reasons = trend.get('signal_reasons')
                 risk_factors = trend.get('risk_factors')
@@ -4972,12 +4975,23 @@ Volume/price changes do not establish capital flows or institutional activity.
 The final action, conclusion, position advice and entry plan must agree. Missing
 price/technical evidence permits Watch or Insufficient Data only. A latest quote
 or an estimated daily bar is not an exchange-confirmed closing price.
+Distinguish a reference support level, an observation-only warning and the single
+executable stop trigger. Different sell/stop prices without explicit roles are a conflict.
+Quote volume ratio, day-to-day volume and volume/previous-five-day-average are distinct
+measures. Cite the input field, value and denominator; a missing quote volume ratio must
+be N/A / insufficient data, never "N/A (low volume)". Price/volume alone cannot prove a
+shakeout or exhausted selling pressure; qualify interpretations and cite verifiable evidence.
 """
         else:
             prompt += """
 证据约束：严禁编造实时新闻、资金流向、市场情绪或机构观点；必须引用输入中
 可核查的来源、链接及时间。缺失时写“数据缺失”，不得从成交量推断主力资金。
 结论与操作计划必须一致；价格或技术依据缺失只能观望或数据不足。
+必须区分参考支撑位、仅观察的预警价、唯一可执行止损触发价；不得给出不同价位的矛盾卖出指令。
+行情量比、成交量较昨日变化、当日量/前5日均量是不同口径，必须引用输入字段、数值及分母。
+行情量比缺失时写 N/A、数据不足，不得写 None（缩量）；日间比较只陈述实际比值，不冒充行情量比。
+洗盘、抛压衰竭等只能作为有待验证的解释，量价本身不能证实交易意图；必须列出可核查数据依据，
+依据不足时明确“不确定”，不得用“明显”“确定”等措辞；正文、清单、止损及仓位须与最终操作一致。
 """
 
         # 明确的输出要求

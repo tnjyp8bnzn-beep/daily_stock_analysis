@@ -29,6 +29,57 @@ _MISSING = {
     'en': 'Data missing: no verifiable evidence was obtained.',
     'ko': '데이터 부족: 확인 가능한 근거가 없습니다.',
 }
+_NARRATIVES = (
+    'dashboard', 'analysis_summary', 'key_points', 'risk_warning', 'buy_reason',
+    'trend_analysis', 'short_term_outlook', 'medium_term_outlook', 'technical_analysis',
+    'ma_analysis', 'volume_analysis', 'pattern_analysis', 'fundamental_analysis',
+    'sector_position', 'company_highlights', 'news_summary', 'market_sentiment', 'hot_topics', 'data_sources',
+)
+_AUDIT_KEYS = {'stop_loss_validation', 'report_consistency', 'market_data_validation',
+               'decision_stability', 'decision_score_calibration', 'risk_levels'}
+_VOLUME_CLAIM = re.compile(r'缩量|放量|平量|量能萎缩|成交萎缩|量能平稳|量能正常|'
+                           r'\b(?:shrinking|low|high|normal) volume\b', re.I)
+_INTENT_CLAIM = re.compile(r'洗盘|抛压衰竭|抛压耗尽|多头抵抗|承接力|'
+                           r'\bshakeout|selling pressure (?:exhausted|exhaustion)\b', re.I)
+_STOP_TRIGGER = re.compile(r'止损|跌破|离场|减仓|清仓|stop.?loss|break below|\bexit\b', re.I)
+_PRICE = re.compile(r'(?<![A-Za-z\d])\d+(?:\.\d+)?(?![\d.])(?:元)?(?!\s*[%％成])')
+
+
+def _map_prose(value: Any, transform, path: str = '') -> Any:
+    """Visit every displayed narrative, keeping audit originals out of execution."""
+    if isinstance(value, dict):
+        return {key: item if key in _AUDIT_KEYS else _map_prose(item, transform, f'{path}.{key}')
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_map_prose(item, transform, path) for item in value]
+    return transform(value, path) if isinstance(value, str) else value
+
+
+def _prices(text: str) -> list[float]:
+    text = re.sub(r'检查项\d+', '', text)
+    return [float(match.group().removesuffix('元')) for match in _PRICE.finditer(text)]
+
+
+def _stop_clauses(text: str) -> list[str]:
+    clauses = []
+    for clause in re.split(r'[；;。，,\n]', text):
+        # Rebound reductions / profit targets are separate from downside stops.
+        if not re.search(r'止损|跌破|stop.?loss|break below', clause, re.I):
+            continue
+        # A warning must explicitly exclude execution to differ from the stop.
+        observation = re.search(r'预警|warning', clause, re.I)
+        no_execution = re.search(r'仅观察|不(?:自动)?(?:卖出|止损)|observation.only|no (?:sale|execution)', text, re.I)
+        if observation and no_execution:
+            continue
+        clauses.append(clause)
+    return clauses
+
+
+def _volume_evidence(context: dict) -> dict:
+    rt = context.get('realtime') or context.get('realtime_quote') or {}
+    ratio = finite_number(rt.get('volume_ratio'))
+    return {'ratio': ratio if ratio is not None and ratio > 0 else None,
+            'source': rt.get('source'), 'quote_time': rt.get('provider_timestamp')}
 
 
 def sanitize_factual_prose(text: str, evidence: str, language: str = 'zh') -> str:
@@ -58,7 +109,7 @@ def _positive(value: Any) -> bool:
         return False
 
 
-def _validate_stop_anchor(dashboard: dict, context: dict) -> bool:
+def _validate_stop_anchor(dashboard: dict, context: dict, narratives: list | None = None) -> bool:
     """Invalidate a contradictory executable stop; retain original audit evidence."""
     battle = dashboard.get('battle_plan') or {}
     points = (battle.get('sniper_points') or {}) if isinstance(battle, dict) else {}
@@ -81,28 +132,49 @@ def _validate_stop_anchor(dashboard: dict, context: dict) -> bool:
     checklist = battle.get('action_checklist')
     if isinstance(checklist, list):
         references.extend(checklist)
-    references = [item for item in references if isinstance(item, str)
-                  and re.search(r'止损|跌破|stop.?loss|break below', item, re.I)]
-    anchor_text = '\n'.join([text, *references])
+    initial_references = references
+    references = []
+    def collect(value, path):
+        if path.endswith(('.stop_loss', '.take_profit')) or not _STOP_TRIGGER.search(value):
+            return value
+        # Explicit non-executable warnings/support observations may differ from a stop.
+        if _stop_clauses(value) and value not in references:
+            references.append(value)
+        return value
+
+    for narrative in [*initial_references, *(narratives or [])]:
+        _map_prose(narrative, collect)
+    trigger_clauses = [clause for reference in references for clause in _stop_clauses(reference)]
+    anchor_text = '\n'.join([text, *trigger_clauses])
     today = context.get('today') or context.get('daily_snapshot') or {}
     anchors = {}
     if re.search(r'(?:今日|当日|今天|本日).{0,3}(?:最低价?|低点)|today.{0,12}low', anchor_text, re.I):
         anchors['low'] = finite_number(today.get('low'))
     for period in re.findall(r'(?<![A-Za-z0-9])MA(5|10|20|60)(?!\d)', anchor_text, re.I):
         anchors[f'ma{period}'] = finite_number(today.get(f'ma{period}'))
-    if not anchors and not invalid_level:
-        return False
-    numbers = re.findall(r'(?<![A-Za-z\d])[-+]?\d+(?:\.\d+)?', text)
+    numbers = _prices(text)
     level = finite_number(numbers[0]) if numbers else None
+    trigger_levels = sorted({number for clause in trigger_clauses for number in _prices(clause)})
+    conflicting_levels = level is not None and any(abs(level - number) > .011 for number in trigger_levels)
     invalid = invalid_level or any(
         value is None or value <= 0 or (level is not None and abs(level - value) > .011)
-        for value in anchors.values())
+        for value in anchors.values()) or conflicting_levels
+    perspective = dashboard.get('data_perspective') or {}
+    position = (perspective.get('price_position') or {}) if isinstance(perspective, dict) else {}
+    position = position if isinstance(position, dict) else {}
+    dashboard['risk_levels'] = {
+        'stop_loss': {'price': level if not invalid else None, 'role': 'executable_stop' if not invalid else 'unconfirmed'},
+        'support': {'price': finite_number(position.get('support_level')), 'role': 'reference_only'},
+        'warning': {'role': 'observation_only', 'requires_explicit_label': True},
+    }
     if invalid:
         dashboard['stop_loss_validation'] = {
-            'status': 'invalid', 'reason': ('stop_loss_anchor_mismatch_or_missing' if anchors else 'stop_loss_value_invalid'),
+            'status': 'invalid', 'reason': ('stop_loss_trigger_conflict' if conflicting_levels else
+                                          'stop_loss_anchor_mismatch_or_missing' if anchors else 'stop_loss_value_invalid'),
             'original_value': text if finite_number(original) is None else original,
             'claimed_level': level, 'anchors': anchors,
             'trigger_text': references,
+            'trigger_levels': trigger_levels,
         }
     return invalid
 
@@ -124,6 +196,18 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
     evidence = str(news_context or '')
     linked_evidence = bool(_URL.search(evidence) and _DATE.search(evidence))
     adjustments: list[str] = []
+    volume_evidence = _volume_evidence(context)
+    ratio = volume_evidence['ratio']
+    volume_missing = {
+        'zh': '数据不足：行情量比缺失，无法判定放量或缩量；日间成交量比较不等同行情量比。',
+        'en': 'Insufficient data: quote volume ratio missing; day-to-day volume comparisons are a separate measure.',
+        'ko': '데이터 부족: 시세 거래량 비율이 없습니다. 일간 거래량 비교는 별도 지표입니다.',
+    }[language]
+    uncertain = {
+        'zh': '不确定：现有量价数据不能证实洗盘或抛压衰竭，需更多可核查证据。',
+        'en': 'Uncertain: price and volume alone cannot establish a shakeout or exhausted selling pressure.',
+        'ko': '불확실: 가격과 거래량만으로 매도 압력 소진이나 의도를 확인할 수 없습니다.',
+    }[language]
 
     def grounded(text: str) -> bool:
         # Require the factual text itself, not just a citation the model invented.
@@ -144,16 +228,23 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         if (factual_field or _FACT_MARKERS.search(value)) and not grounded(value):
             adjustments.append('unsupported_fact_removed')
             return missing
+        if _INTENT_CLAIM.search(value) and not grounded(value) and value != uncertain:
+            adjustments.append('unsupported_interpretation_qualified')
+            return uncertain
+        # Future observation conditions do not assert that volume has already changed.
+        actual_volume_claim = False
+        for clause in re.split(r'[，,。；;\n]', value):
+            claim = _VOLUME_CLAIM.search(clause)
+            if claim and not re.search(r'等待|若|如果|需观察|待|\bif\b|\bwait\b', clause[:claim.start()], re.I):
+                actual_volume_claim = True
+        if ratio is None and actual_volume_claim and value != volume_missing:
+            adjustments.append('unsupported_volume_claim_removed')
+            return volume_missing
         return value
 
     # Traverse all displayed narratives, including nested checklist/strategy text.
-    for field in (
-        'dashboard', 'analysis_summary', 'key_points', 'risk_warning', 'buy_reason',
-        'trend_analysis', 'short_term_outlook', 'medium_term_outlook', 'technical_analysis',
-        'ma_analysis', 'volume_analysis', 'pattern_analysis', 'fundamental_analysis',
-        'sector_position', 'company_highlights', 'news_summary', 'market_sentiment', 'hot_topics', 'data_sources',
-    ):
-        setattr(result, field, clean(getattr(result, field, None), field))
+    for field in _NARRATIVES:
+        setattr(result, field, _map_prose(getattr(result, field, None), clean, field))
 
     # Mandatory disclosure even if the model left these fields empty.
     for field in ('news_summary', 'market_sentiment', 'hot_topics'):
@@ -161,6 +252,23 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
             setattr(result, field, missing)
     dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
     result.dashboard = dashboard
+    perspective = dashboard.get('data_perspective')
+    if isinstance(perspective, dict) and isinstance(perspective.get('volume_analysis'), dict):
+        volume = perspective['volume_analysis']
+        volume['volume_ratio'] = ratio if ratio is not None else 'N/A'
+        volume['volume_evidence'] = volume_evidence
+        if ratio is None:
+            volume.update(volume_status=volume_missing, volume_meaning=volume_missing)
+        else:
+            volume['volume_status'] = ('放量' if ratio >= 1.2 else '缩量' if ratio < .8 else '平量') if language == 'zh' else (
+                'High volume' if ratio >= 1.2 else 'Low volume' if ratio < .8 else 'Normal volume')
+            source = volume_evidence['source'] or 'unknown'
+            quote_time = volume_evidence['quote_time'] or 'unknown'
+            volume['volume_meaning'] = (
+                f'行情量比 {ratio:g}，来源 {source}，报价时间 {quote_time}；仅反映相对成交活跃度，不能证实交易意图。'
+                if language == 'zh' else f'Quote volume ratio {ratio:g}; source {source}; quote time {quote_time}. '
+                'This measures relative volume, not trading intent.'
+            )
     intel = dashboard.setdefault('intelligence', {})
     if not isinstance(intel, dict):
         intel = dashboard['intelligence'] = {}
@@ -178,7 +286,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
     realtime = context.get('realtime') or context.get('realtime_quote') or {}
     quality = context_quality(context)
     dashboard['market_data_validation'] = quality
-    stop_invalid = _validate_stop_anchor(dashboard, context)
+    stop_invalid = _validate_stop_anchor(dashboard, context, [getattr(result, field, None) for field in _NARRATIVES])
     if stop_invalid:
         adjustments.append('stop_loss_anchor_conflict')
     if quality['status'] != 'ok':
@@ -210,24 +318,34 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
     battle = dashboard.get('battle_plan') or {}
     phase = dashboard.get('phase_decision') or {}
     strategy = battle.get('position_strategy', {}) if isinstance(battle, dict) else {}
-    entry_plan = {key: strategy.get(key) for key in ('entry_plan', 'suggested_position')} if isinstance(strategy, dict) else {}
-    plans = [core, entry_plan, phase,
-             result.analysis_summary, result.buy_reason, result.key_points]
+    plans = [getattr(result, field, None) for field in _NARRATIVES]
 
     def conflicting(value: Any, *, entry_only: bool = False) -> bool:
         if isinstance(value, dict):
-            return any(conflicting(item, entry_only=entry_only) for item in value.values())
+            return any(conflicting(item, entry_only=entry_only) for key, item in value.items()
+                       if key not in _AUDIT_KEYS and key not in {'stop_loss', 'take_profit'})
         if isinstance(value, list):
             return any(conflicting(item, entry_only=entry_only) for item in value)
         if not isinstance(value, str) or value == missing:
             return False
-        for clause in re.split(r'[，,。；;：:\n]|同时|但|而|\band\b|\bbut\b', value, flags=re.I):
-            action = normalize_decision_action(clause)
-            if action and (_BUCKET[action] == 'buy' if entry_only else _BUCKET[action] != direction):
-                return True
+        for sentence in re.split(r'[。；;\n]', value):
+            if (not entry_only and not stop_invalid and _STOP_TRIGGER.search(sentence)
+                    and re.search(r'若|如果|跌破|\bif\b|below', sentence, re.I)
+                    and not re.search(r'买入|加仓|建仓|\bbuy\b|\badd\b', sentence, re.I)):
+                continue
+            for clause in re.split(r'[，,：:]|同时|但|而|并且?|以及|\band\b|\bbut\b', sentence, flags=re.I):
+                action = normalize_decision_action(clause)
+                actions = [action] if action else [normalize_decision_action(token) for token in re.findall(
+                    r'买入|加仓|建仓|减仓|卖出|清仓|持有|观望|\b(?:buy|add|sell|reduce|hold|watch)\b', clause, re.I)]
+                if any(action and (_BUCKET[action] == 'buy' if entry_only else _BUCKET[action] != direction)
+                       for action in actions):
+                    return True
         return False
 
     conflict = conflict or any(conflicting(plan) for plan in plans)
+    allocation = str(strategy.get('suggested_position', '')) if isinstance(strategy, dict) else ''
+    if direction == 'hold' and re.search(r'[1-9]\d*(?:\.\d+)?\s*(?:成|[%％])', allocation):
+        conflict = True
     if conflict or not has_basis:
         adjustments.append('action_conflict' if conflict else 'insufficient_basis')
         advice_action = 'watch'
@@ -340,11 +458,11 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         claimed = validation.get('claimed_level')
 
         def invalid_trigger(value: Any) -> bool:
-            if not isinstance(value, str) or not re.search(r'止损|跌破|stop.?loss|break below', value, re.I):
+            if not isinstance(value, str) or not _STOP_TRIGGER.search(value):
                 return False
             named = re.search(r'(?:今日|当日|今天).{0,3}(?:最低价?|低点)|today.{0,12}low|MA(?:5|10|20|60)(?!\d)', value, re.I)
             numbers = [finite_number(number) for number in re.findall(r'\d+(?:\.\d+)?', value)]
-            return bool(named or (claimed is not None and any(
+            return bool(named or (numbers and value in validation.get('trigger_text', [])) or (claimed is not None and any(
                 number is not None and abs(number - claimed) <= .011 for number in numbers)))
 
         battle = dashboard.get('battle_plan') or {}
@@ -354,9 +472,10 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         checklist = battle.get('action_checklist')
         if isinstance(checklist, list):
             battle['action_checklist'] = [stop_warning if invalid_trigger(item) else item for item in checklist]
-        for field in ('risk_warning', 'short_term_outlook', 'medium_term_outlook'):
-            if invalid_trigger(getattr(result, field, None)):
-                setattr(result, field, stop_warning)
+        for field in _NARRATIVES:
+            setattr(result, field, _map_prose(getattr(result, field, None),
+                                            lambda value, path: stop_warning if invalid_trigger(value) else value, field))
+        dashboard = result.dashboard
         if stop_warning not in str(getattr(result, 'risk_warning', '') or ''):
             result.risk_warning = f'{getattr(result, "risk_warning", "") or ""}\n{stop_warning}'.strip()
     missing_dimensions = [key for key in ('capital_flow', 'institutional_views') if intel[key] == missing]
@@ -369,5 +488,8 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         disclosure = ' / '.join(dimension_labels[key] for key in missing_dimensions) + ': ' + missing
         if disclosure not in str(result.risk_warning or ''):
             result.risk_warning = f'{result.risk_warning or ""}\n{disclosure}'.strip()
-    dashboard['report_consistency'] = {'adjustments': sorted(set(adjustments))}
+    previous_adjustments = (dashboard.get('report_consistency') or {}).get('adjustments', [])
+    adjustments = sorted(set(adjustments).union(previous_adjustments))
+    dashboard['report_consistency'] = {'adjustments': adjustments, 'checked': ['action', 'stop_loss', 'allocation', 'body'],
+                                       'volume_evidence': volume_evidence}
     return sorted(set(adjustments))

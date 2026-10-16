@@ -48,6 +48,7 @@ class VolumeStatus(Enum):
     SHRINK_VOLUME_UP = "缩量上涨"      # 无量上涨
     SHRINK_VOLUME_DOWN = "缩量回调"    # 缩量回调（好）
     NORMAL = "量能正常"
+    UNKNOWN = "数据不足"
 
 
 class BuySignal(Enum):
@@ -103,8 +104,8 @@ class TrendAnalysisResult:
     bias_ma20: float = 0.0
     
     # 量能分析
-    volume_status: VolumeStatus = VolumeStatus.NORMAL
-    volume_ratio_5d: float = 0.0     # 当日成交量/5日均量
+    volume_status: VolumeStatus = VolumeStatus.UNKNOWN
+    volume_ratio_5d: float | None = None  # 当日成交量/前5个完整交易日均量
     volume_trend: str = ""           # 量能趋势描述
     
     # 支撑压力
@@ -424,14 +425,22 @@ class StockTrendAnalyzer:
         
         偏好：缩量回调 > 放量上涨 > 缩量上涨 > 放量下跌
         """
-        if len(df) < 5:
+        result.volume_status = VolumeStatus.UNKNOWN
+        result.volume_ratio_5d = None
+        result.volume_trend = '数据不足：需当日及前5个交易日完整成交量'
+        if len(df) < 6 or 'volume' not in df:
             return
         
         latest = df.iloc[-1]
-        vol_5d_avg = df['volume'].iloc[-6:-1].mean()
+        volumes = pd.to_numeric(df['volume'].iloc[-6:], errors='coerce')
+        if not np.isfinite(volumes).all() or (volumes < 0).any():
+            return
+        vol_5d_avg = volumes.iloc[:-1].mean()
         
         if vol_5d_avg > 0:
             result.volume_ratio_5d = float(latest['volume']) / vol_5d_avg
+        else:
+            return
         
         # 判断价格变化
         prev_close = df.iloc[-2]['close']
@@ -451,7 +460,7 @@ class StockTrendAnalyzer:
                 result.volume_trend = "缩量上涨，上攻动能不足"
             else:
                 result.volume_status = VolumeStatus.SHRINK_VOLUME_DOWN
-                result.volume_trend = "缩量回调，洗盘特征明显（好）"
+                result.volume_trend = "成交量低于前5日均量且价格回落；原因不确定，不能据此确认洗盘"
         else:
             result.volume_status = VolumeStatus.NORMAL
             result.volume_trend = "量能正常"
@@ -686,7 +695,7 @@ class StockTrendAnalyzer:
         score += vol_score
 
         if result.volume_status == VolumeStatus.SHRINK_VOLUME_DOWN:
-            reasons.append("✅ 缩量回调，主力洗盘")
+            reasons.append("✅ 成交量低于前5日均量且价格回落；不代表资金意图")
         elif result.volume_status == VolumeStatus.HEAVY_VOLUME_DOWN:
             risks.append("⚠️ 放量下跌，注意风险")
 
@@ -787,7 +796,7 @@ class StockTrendAnalyzer:
             f"   MA20: {result.ma20:.2f} (乖离 {result.bias_ma20:+.2f}%)",
             f"",
             f"📊 量能分析: {result.volume_status.value}",
-            f"   量比(vs5日): {result.volume_ratio_5d:.2f}",
+            f"   量比(vs前5日): {format(result.volume_ratio_5d, '.2f') if result.volume_ratio_5d is not None else '数据不足'}",
             f"   量能趋势: {result.volume_trend}",
             f"",
             f"📈 MACD指标: {result.macd_status.value}",

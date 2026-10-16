@@ -65,7 +65,7 @@ def _handle_analyze_trend(stock_code: str) -> dict:
         "bias_ma10": round(result.bias_ma10, 2),
         "bias_ma20": round(result.bias_ma20, 2),
         "volume_status": result.volume_status.value,
-        "volume_ratio_5d": round(result.volume_ratio_5d, 2),
+        "volume_ratio_5d": round(result.volume_ratio_5d, 2) if result.volume_ratio_5d is not None else None,
         "volume_trend": result.volume_trend,
         "support_ma5": result.support_ma5,
         "support_ma10": result.support_ma10,
