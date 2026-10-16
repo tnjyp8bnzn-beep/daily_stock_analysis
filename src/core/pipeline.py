@@ -938,6 +938,9 @@ class StockAnalysisPipeline:
                 )
 
             if result:
+                from src.report_consistency import apply_report_consistency
+
+                apply_report_consistency(result, enhanced_context, news_context)
                 self._append_daily_data_source(result, context, analysis_target)
 
             # Step 8: 保存分析历史记录
@@ -1027,6 +1030,8 @@ class StockAnalysisPipeline:
             增强后的上下文
         """
         enhanced = context.copy()
+        # Keep the provider's daily bar separate from any realtime MA overlay.
+        enhanced['daily_snapshot'] = dict(context.get('today') or {})
         enhanced["report_language"] = normalize_report_language(getattr(self.config, "report_language", "zh"))
         
         # 添加股票名称
@@ -1798,6 +1803,27 @@ class StockAnalysisPipeline:
                     result.market_structure_context = market_structure_context
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
+                from src.report_consistency import apply_report_consistency
+
+                action_before_consistency = getattr(result, "action", None)
+                report_context = {
+                    **(analysis_context or {}),
+                    'realtime': initial_context.get('realtime_quote') or {},
+                    'market_phase_context': market_phase_context or {},
+                    'fundamental_context': fundamental_context,
+                }
+                result.market_snapshot = self.analyzer._build_market_snapshot(report_context)
+                apply_report_consistency(result, report_context, initial_context.get('news_context'))
+                action_after_consistency = normalize_decision_action(getattr(result, "action", None))
+                if action_chain_valid and action_after_consistency is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="report_consistency",
+                        before=action_before_consistency,
+                        after=action_after_consistency,
+                    )
+                else:
+                    action_chain_valid = False
                 final_action = normalize_decision_action(getattr(result, "action", None))
                 if isinstance(result.dashboard, dict):
                     result.dashboard.pop("agent_disagreement_explanation", None)

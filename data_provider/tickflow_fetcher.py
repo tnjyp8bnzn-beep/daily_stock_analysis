@@ -734,7 +734,9 @@ class TickFlowFetcher(BaseFetcher):
         if not symbols:
             return 0
 
-        effective_batch_size = max(1, int(batch_size or self.batch_size))
+        effective_batch_size = min(
+            _MAX_SYMBOLS_PER_QUOTE_REQUEST, max(1, int(batch_size or self.batch_size))
+        )
         cached_count = 0
         for offset in range(0, len(symbols), effective_batch_size):
             batch_symbols = symbols[offset : offset + effective_batch_size]
@@ -762,7 +764,9 @@ class TickFlowFetcher(BaseFetcher):
                 symbol = str(quote.get("symbol") or "").upper()
                 if not symbol:
                     continue
-                self._quote_cache[symbol] = (now, quote)
+                self._quote_cache[symbol] = (
+                    now, {**quote, "_fetched_at": datetime.now(timezone.utc).isoformat()}
+                )
                 stored += 1
         return stored
 
@@ -855,6 +859,7 @@ class TickFlowFetcher(BaseFetcher):
             low=low,
             pre_close=prev_close,
             source=RealtimeSource.TICKFLOW,
+            fetched_at=quote.get("_fetched_at"),
             provider_timestamp=provider_timestamp,
             turnover_rate=self._ratio_to_percent(ext.get("turnover_rate")),
             amplitude=self._ratio_to_percent(ext.get("amplitude")),
@@ -872,7 +877,10 @@ class TickFlowFetcher(BaseFetcher):
             return None
         if numeric > 10_000_000_000:
             numeric = numeric / 1000.0
-        return datetime.fromtimestamp(numeric, timezone.utc).isoformat()
+        try:
+            return datetime.fromtimestamp(numeric, timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            return None
 
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         symbol = self._to_tickflow_symbol(stock_code)

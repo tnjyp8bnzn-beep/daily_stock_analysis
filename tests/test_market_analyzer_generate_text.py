@@ -4172,7 +4172,8 @@ Sector text.
         assert "| 1 | AI算力 | +3.25% |" in result
         assert "#### 近三日市场线索" not in result
         assert "AI算力板块走强" not in result
-        assert "新闻。" in result
+        assert "新闻。" not in result
+        assert "数据缺失" in result
         assert "算力产业链延续活跃" not in result
 
     def test_inject_data_into_review_appends_sector_block_when_heading_drifts(self):

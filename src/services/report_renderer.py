@@ -87,6 +87,7 @@ def _resolve_templates_dir() -> Path:
     return templates_dir
 
 
+from src.quote_provenance import provenance_lines
 from src.services.empty_news import empty_news_disclosure
 
 
@@ -222,6 +223,7 @@ def render(
         "sell_count": sell_count,
         "hold_count": hold_count,
         "labels": labels,
+        "provenance_lines": provenance_lines,
         "report_language": report_language,
         "models_used": models_used,
         "show_llm_model": show_llm_model,

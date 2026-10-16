@@ -2377,7 +2377,8 @@ class DataFetcherManager:
             except ValueError:
                 return None
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
+            # Timezone cannot be inferred safely for an arbitrary provider.
+            return None
         return parsed.astimezone(timezone.utc)
 
     @staticmethod
@@ -2407,7 +2408,8 @@ class DataFetcherManager:
         if quote is None:
             return None
 
-        fetched_at = self._utc_now_iso()
+        # A fetcher cache hit must retain the actual acquisition time.
+        fetched_at = getattr(quote, "fetched_at", None) or self._utc_now_iso()
         setattr(quote, "fetched_at", fetched_at)
         if fallback_from:
             setattr(quote, "fallback_from", str(fallback_from))
@@ -2422,8 +2424,17 @@ class DataFetcherManager:
             return quote
 
         setattr(quote, "provider_timestamp", provider_dt.isoformat())
-        fetched_dt = self._parse_realtime_timestamp(fetched_at) or datetime.now(timezone.utc)
-        stale_seconds = max(0, int((fetched_dt - provider_dt).total_seconds()))
+        fetched_dt = self._parse_realtime_timestamp(fetched_at)
+        if fetched_dt is None:
+            setattr(quote, "stale_seconds", None)
+            setattr(quote, "is_stale", None)
+            return quote
+        delta = (fetched_dt - provider_dt).total_seconds()
+        if delta < 0:
+            setattr(quote, "stale_seconds", None)
+            setattr(quote, "is_stale", None)
+            return quote
+        stale_seconds = int(delta)
         ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
         setattr(quote, "stale_seconds", stale_seconds)
         setattr(quote, "is_stale", stale_seconds > int(ttl))

@@ -437,7 +437,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertNotIn("| 最高价 |", prompt)
         self.assertNotIn("| 最低价 |", prompt)
 
-    def test_format_prompt_keeps_legacy_quote_labels_without_partial_intraday_context(self) -> None:
+    def test_format_prompt_labels_unknown_session_price_conservatively(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
             analyzer = GeminiAnalyzer()
 
@@ -459,8 +459,8 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
 
             prompt = analyzer._format_prompt(context, "贵州茅台", news_context=None)
 
-            self.assertIn("### 今日行情", prompt)
-            self.assertIn("| 收盘价 | 1880.0 元 |", prompt)
+            self.assertIn("### 最新行情", prompt)
+            self.assertIn("| 最新价 | 1880.0 元 |", prompt)
 
     def test_format_prompt_omits_legacy_trend_checks_for_nondefault_skill_mode(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):

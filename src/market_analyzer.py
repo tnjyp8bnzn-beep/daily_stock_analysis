@@ -1133,6 +1133,12 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         news: Optional[List] = None,
     ) -> str:
         """Inject structured data tables into the corresponding LLM prose sections."""
+        from src.report_consistency import sanitize_factual_prose
+
+        evidence = '\n'.join(
+            ' '.join(self._normalize_news_item(item).values()) for item in (news or [])
+        )
+        review = sanitize_factual_prose(review, evidence, self._get_output_language())
         # Build data blocks
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
@@ -1779,6 +1785,15 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             else "报告要像交易员盘后工作台：先给结论，再按指数、新闻催化和计划展开"
         )
 
+        evidence_rule = (
+            "Never invent live news, capital flows, market sentiment or institutional views. "
+            "Cite supplied sources, dates and URLs; otherwise state data missing. "
+            "Price/volume observations are technical inferences, not direct flow or sentiment evidence."
+            if review_language == "en" else
+            "严禁编造实时新闻、资金流向、市场情绪或机构观点；必须引用输入中的来源、日期和链接，"
+            "缺少可核查数据时明确标注数据缺失。量价观察仅属技术推断，不能冒充真实资金流或情绪调查。"
+        )
+
         if review_language == "en":
             report_title = self._get_review_title(overview.date).removeprefix("## ").strip()
             return f"""You are a professional {self._get_market_scope_name('en')} analyst. Please produce a concise market recap report based on the data below.
@@ -1811,6 +1826,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 {news_placeholder}
 
 {data_no_indices_hint}
+
+{evidence_rule}
 
 {self._get_strategy_prompt_block()}
 
@@ -1865,6 +1882,8 @@ Output the report content directly, no extra commentary.
 {news_placeholder}
 
 {data_no_indices_hint}
+
+{evidence_rule}
 
 {self._get_strategy_prompt_block()}
 

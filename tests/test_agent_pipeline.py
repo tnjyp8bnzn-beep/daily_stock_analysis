@@ -1691,7 +1691,7 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
     """Test stock-name handling in _analyze_with_agent."""
 
     def test_analyze_with_agent_keeps_high_score_hold_action_consistent_across_outputs(self):
-        """A high-score hold may align to buy, and every public output must use that action."""
+        """A high score cannot override missing evidence; every final output must stay Watch."""
         with patch('src.core.pipeline.get_config') as mock_config, \
              patch('src.core.pipeline.get_db'), \
              patch('src.core.pipeline.DataFetcherManager'), \
@@ -1728,6 +1728,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             )
 
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
             pipeline.search_service.is_available = False
             pipeline.db.save_analysis_history.return_value = 2044
             pipeline._extract_decision_signal_after_history_save = MagicMock()
@@ -1769,21 +1771,26 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result.decision_type, "hold")
-            self.assertEqual(result.action, "buy")
-            self.assertEqual(result.action_label, "买入")
+            self.assertEqual(result.action, "watch")
+            self.assertEqual(result.action_label, "观望")
 
             explanation = result.dashboard["agent_disagreement_explanation"]
             self.assertNotIn("final_signal", explanation)
             self.assertEqual(explanation["pipeline_start_action"], "buy")
-            self.assertEqual(explanation["final_adjustments"], [])
-            self.assertEqual(explanation["final_action"], "buy")
+            self.assertEqual(explanation["final_adjustments"], [
+                {"source": "report_consistency", "from_action": "buy", "to_action": "watch"}
+            ])
+            self.assertEqual(explanation["final_action"], "watch")
+            self.assertEqual(explanation["base_disagreement"]["agents"][0]["signal"], "buy")
+            from src.schemas.report_schema import AgentDisagreementExplanation
+            AgentDisagreementExplanation.model_validate(explanation)
 
             saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
             self.assertIs(saved_result, result)
-            self.assertEqual(saved_result.action, "buy")
+            self.assertEqual(saved_result.action, "watch")
             self.assertEqual(
                 saved_result.dashboard["agent_disagreement_explanation"]["final_action"],
-                "buy",
+                "watch",
             )
 
             signal_result = (
@@ -1799,11 +1806,11 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                 profile_source="auto_default",
             )
             self.assertIsNotNone(signal_payload)
-            self.assertEqual(signal_payload["action"], "buy")
+            self.assertEqual(signal_payload["action"], "watch")
             self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
 
     def test_analyze_with_agent_keeps_ambiguous_action_fail_closed_across_outputs(self):
-        """Ambiguous advice must not gain an action through Pipeline ordering."""
+        """Ambiguous advice must finalize to Watch without inventing an Agent action chain."""
         with patch('src.core.pipeline.get_config') as mock_config, \
              patch('src.core.pipeline.get_db'), \
              patch('src.core.pipeline.DataFetcherManager'), \
@@ -1840,6 +1847,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             )
 
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
             pipeline.search_service.is_available = False
             pipeline.db.save_analysis_history.return_value = 2044
             pipeline._extract_decision_signal_after_history_save = MagicMock()
@@ -1880,14 +1889,14 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             )
 
             self.assertIsNotNone(result)
-            self.assertEqual(result.decision_type, "buy")
-            self.assertIsNone(result.action)
-            self.assertIsNone(result.action_label)
+            self.assertEqual(result.decision_type, "hold")
+            self.assertEqual(result.action, "watch")
+            self.assertEqual(result.action_label, "观望")
             self.assertNotIn("agent_disagreement_explanation", result.dashboard)
 
             saved_result = pipeline.db.save_analysis_history.call_args.kwargs["result"]
             self.assertIs(saved_result, result)
-            self.assertIsNone(saved_result.action)
+            self.assertEqual(saved_result.action, "watch")
             self.assertNotIn("agent_disagreement_explanation", saved_result.dashboard)
 
             signal_result = (
@@ -1902,7 +1911,9 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                 report_type="simple",
                 profile_source="auto_default",
             )
-            self.assertIsNone(signal_payload)
+            self.assertIsNotNone(signal_payload)
+            self.assertEqual(signal_payload["action"], "watch")
+            self.assertEqual(signal_payload["metadata"]["decision_type"], "hold")
 
     def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
         """Should use resolved stock name from dashboard for search and DB persistence."""
@@ -1937,6 +1948,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             from src.agent.executor import AgentResult
             from src.enums import ReportType
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
 
             agent_result = AgentResult(
                 success=True,
@@ -2019,6 +2032,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             from src.enums import ReportType
             from src.stock_analyzer import TrendAnalysisResult, TrendStatus, BuySignal
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
 
             agent_result = AgentResult(
                 success=True,
@@ -2090,9 +2105,9 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result.decision_type, "hold")
-            self.assertEqual(result.operation_advice, "洗盘观察")
+            self.assertEqual(result.operation_advice, "观望")
             self.assertEqual(result.dashboard.get("decision_type"), "hold")
-            self.assertEqual(result.dashboard.get("operation_advice"), "洗盘观察")
+            self.assertEqual(result.dashboard.get("operation_advice"), "观望")
             self.assertEqual(result.dashboard.get("sentiment_score"), result.sentiment_score)
             explanation = result.dashboard["agent_disagreement_explanation"]
             self.assertEqual(explanation["risk_control"]["post_risk_signal"], "sell")
@@ -2104,7 +2119,12 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
                     {
                         "source": "structure_and_fundamentals",
                         "from_action": "sell",
-                        "to_action": result.action,
+                        "to_action": "hold",
+                    },
+                    {
+                        "source": "report_consistency",
+                        "from_action": "hold",
+                        "to_action": "watch",
                     }
                 ],
             )
@@ -2167,6 +2187,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             from src.enums import ReportType
 
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
             pipeline.search_service.is_available = False
             pipeline._ensure_agent_history = MagicMock()
             pipeline._build_analysis_context_pack_outputs = MagicMock(
@@ -2230,8 +2252,11 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             phase_decision = result.dashboard["phase_decision"]
             self.assertEqual(phase_decision["phase_context"]["phase"], "intraday")
             self.assertEqual(phase_decision["action_window"], "模型未提供阶段化行动窗口")
-            self.assertEqual(phase_decision["immediate_action"], "模型未提供阶段化即时动作")
-            self.assertEqual(phase_decision["watch_conditions"], [])
+            self.assertIn("观望", phase_decision["immediate_action"])
+            self.assertEqual(result.action, "watch")
+            self.assertIn("数据缺失", result.dashboard["battle_plan"]["sniper_points"]["stop_loss"])
+            self.assertTrue(phase_decision["watch_conditions"])
+            self.assertTrue(all("观望" in item for item in phase_decision["watch_conditions"]))
             self.assertEqual(phase_decision["next_check_time"], "模型未提供下一次检查点")
             self.assertEqual(phase_decision["confidence_reason"], "模型未提供阶段化置信度理由")
 
@@ -2275,6 +2300,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             from src.services.daily_market_context import DailyMarketContext
 
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
             pipeline.search_service.is_available = False
             pipeline.db.save_analysis_history.return_value = 1
             pipeline._extract_decision_signal_after_history_save = MagicMock()
@@ -2409,6 +2436,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             from src.agent.executor import AgentResult
             from src.enums import ReportType
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
             pipeline.search_service.is_available = False
 
             agent_result = AgentResult(
@@ -2488,6 +2517,8 @@ class TestAnalyzeWithAgentStockName(unittest.TestCase):
             from src.enums import ReportType
 
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
             pipeline.search_service.is_available = False
             pipeline._ensure_agent_history = MagicMock()
             pipeline._agent_result_to_analysis_result = MagicMock(
@@ -3425,6 +3456,8 @@ class TestSkillActivation(unittest.TestCase):
             from src.agent.executor import AgentResult
             from src.enums import ReportType
             pipeline = StockAnalysisPipeline(config=mock_cfg)
+            pipeline.fetcher_manager.get_daily_data.return_value = (None, "test-empty-history")
+            pipeline.social_sentiment_service = None
 
             # Dashboard with "80分" instead of 80
             agent_result = AgentResult(
