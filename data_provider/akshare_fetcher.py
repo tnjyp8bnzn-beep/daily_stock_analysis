@@ -30,7 +30,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -1506,6 +1506,7 @@ class AkshareFetcher(BaseFetcher):
                 name=fields[1] if len(fields) > 1 else "",
                 source=RealtimeSource.TENCENT,
                 provider_timestamp=_tencent_quote_time(fields),
+                fetched_at=datetime.now(timezone.utc).isoformat(),
                 price=safe_float(fields[3]),
                 change_pct=safe_float(fields[32]),
                 change_amount=safe_float(fields[31]) if len(fields) > 31 else None,

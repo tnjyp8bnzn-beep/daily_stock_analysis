@@ -710,6 +710,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响登录限流、审计和真实 IP 识别。'],
     notes: ['不可信代理链上开启会允许客户端伪造来源 IP。'],
   },
+  'settings.system.intraday_monitor': {
+    title: '持续盘中盯盘',
+    summary: '常驻服务在交易时段持续检查行情，默认只记模拟信号。',
+    usage: '启用 INTRADAY_MONITOR_ENABLED；默认每60秒检查，最低30秒。审核信号后再打开 INTRADAY_MONITOR_NOTIFY。',
+    valueNotes: ['私有持仓证据路径指向仓库外JSON，不会虚构买卖或更改真实成交台账。'],
+    impact: ['复用现有推送渠道；不修改每日分析时间，不调用AI，不自动下单。'],
+    notes: ['需要持续运行的电脑或服务器；免费行情和网络可能延迟。修改这些启动配置后重启服务。'],
+  },
   'settings.system.schedule': {
     title: '定时任务',
     summary: '控制是否启用每日定时分析以及启动时是否立即执行一次。',
@@ -1937,6 +1945,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['With multiple proxies or CDNs, rate-limit keys may collapse to edge proxy IPs.'],
     impact: ['Affects login rate limiting, auditing, and client IP detection.'],
     notes: ['Do not enable it on an untrusted proxy chain.'],
+  },
+  'settings.system.intraday_monitor': {
+    title: 'Continuous Intraday Monitor',
+    summary: 'An always-on process polls quotes during verified trading sessions; paper signals by default.',
+    usage: 'Enable INTRADAY_MONITOR_ENABLED. The default interval is 60 seconds (minimum 30). Review signals before enabling INTRADAY_MONITOR_NOTIFY.',
+    valueNotes: ['Keep broker evidence JSON outside the repository. It never invents fills or changes the trade ledger.'],
+    impact: ['Reuses notification channels, preserves daily schedules, calls no AI and places no orders.'],
+    notes: ['Requires an always-on host. Free quotes and networks may be delayed. Restart after changing startup configuration.'],
   },
   'settings.system.schedule': {
     title: 'Schedule',

@@ -2200,7 +2200,7 @@ class DataFetcherManager:
         """返回可用数据源名称列表"""
         return [f.name for f in self._get_fetchers_snapshot()]
     
-    def prefetch_realtime_quotes(self, stock_codes: List[str]) -> int:
+    def prefetch_realtime_quotes(self, stock_codes: List[str], *, force_refresh: bool = False) -> int:
         """
         批量预取实时行情数据（在分析开始前调用）
         
@@ -2216,6 +2216,8 @@ class DataFetcherManager:
         
         Args:
             stock_codes: 待分析的股票代码列表
+            force_refresh: Allow small explicit polling batches. TickFlow fetches
+                fresh symbols; other providers retain their own cache policies.
             
         Returns:
             预取的股票数量（0 表示跳过预取）
@@ -2270,7 +2272,7 @@ class DataFetcherManager:
             return 0
         
         # 如果股票数量少于 5 个，不进行批量预取（逐个查询更高效）
-        if len(stock_codes) < 5:
+        if not stock_codes or (len(stock_codes) < 5 and not force_refresh):
             logger.info(
                 "[预取] component=realtime_prefetch action=skip reason=small_batch "
                 "stock_count=%d threshold=5 prefetch_source=%s",
@@ -2461,7 +2463,8 @@ class DataFetcherManager:
         return quote
     
     def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True,
-                           analysis_target: Optional[AnalysisTarget] = None):
+                           analysis_target: Optional[AnalysisTarget] = None,
+                           quote_acceptor=None):
         """
         获取实时行情数据（自动故障切换）
         
@@ -2727,6 +2730,10 @@ class DataFetcherManager:
                     raise ValueError("Realtime provider returned another target")
                 
                 if quote is not None and quote.has_basic_data():
+                    # Optional strict intraday gate: stale caches must fall through
+                    # to the next configured source, never masquerade as a fresh poll.
+                    if quote_acceptor is not None and not quote_acceptor(quote):
+                        raise ValueError("intraday_quote_rejected")
                     record_provider_run(
                         data_type="realtime_quote",
                         provider=provider_name,

@@ -1879,6 +1879,10 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
+            from src.services.intraday_monitor import build_intraday_background_tasks
+
+            background_tasks.extend(build_intraday_background_tasks(
+                config, config_provider=_reload_runtime_config))
             schedule_kwargs = {
                 "task": scheduled_task,
                 "schedule_time": config.schedule_time,

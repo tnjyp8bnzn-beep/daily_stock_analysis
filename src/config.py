@@ -1145,6 +1145,10 @@ class Config:
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
+    intraday_monitor_enabled: bool = False
+    intraday_monitor_interval_seconds: int = 60
+    intraday_monitor_notify: bool = False  # Paper signals first; explicit opt-in phone alerts
+    intraday_portfolio_snapshot_path: str = ""  # Private evidence, never synthetic trades
 
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -2141,6 +2145,12 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            intraday_monitor_enabled=parse_env_bool(os.getenv('INTRADAY_MONITOR_ENABLED'), default=False),
+            intraday_monitor_interval_seconds=parse_env_int(
+                os.getenv('INTRADAY_MONITOR_INTERVAL_SECONDS'), 60,
+                field_name='INTRADAY_MONITOR_INTERVAL_SECONDS', minimum=30),
+            intraday_monitor_notify=parse_env_bool(os.getenv('INTRADAY_MONITOR_NOTIFY'), default=False),
+            intraday_portfolio_snapshot_path=os.getenv('INTRADAY_PORTFOLIO_SNAPSHOT_PATH', ''),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),
