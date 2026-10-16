@@ -89,6 +89,38 @@ def to_utc_naive_datetime(value: datetime) -> datetime:
 
 # === 数据模型定义 ===
 
+class IntradayMonitorState(Base):
+    """Durable edge detection; a signal is never a broker fill."""
+
+    __tablename__ = 'intraday_monitor_states'
+    key = Column(String(128), primary_key=True)
+    signal = Column(String(32), nullable=False, default='watch')
+    revision = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=utc_naive_now, nullable=False)
+
+
+class IntradayObservation(Base):
+    """Sampled real quotes for later signal replay, without fabricated fills."""
+
+    __tablename__ = 'intraday_observations'
+    key = Column(String(160), primary_key=True)
+    payload = Column(Text, nullable=False)
+    observed_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+
+
+class IntradayMonitorEvent(Base):
+    """Paper observations and provider acceptance, separate from portfolio trades."""
+
+    __tablename__ = 'intraday_monitor_events'
+    id = Column(String(160), primary_key=True)
+    state_key = Column(String(128), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    status = Column(String(24), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    retry_after = Column(Float, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_naive_now, nullable=False, index=True)
+    error = Column(String(512))
+
 class DatabaseSchemaMigration(Base):
     """Applied database schema version marker."""
 

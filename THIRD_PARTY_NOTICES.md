@@ -16,3 +16,11 @@ following notice applies to the files identified below.
 The included code has been modified and integrated into
 `daily_stock_analysis`. Per-file headers identify the source revision and
 modification status.
+
+## Optional intraday research adapter
+
+`scripts/research/intraday_backtest.py` is a standalone GPL-3.0-or-later program
+using [Backtrader](https://github.com/mementum/backtrader), pinned to 1.9.78.123.
+Its license is provided in `scripts/research/COPYING`. It is installed only with
+`requirements-backtest.txt` (and backend test tooling), is not imported by the
+application and does not change the license of the existing application files.

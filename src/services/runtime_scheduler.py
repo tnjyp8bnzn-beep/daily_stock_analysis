@@ -640,12 +640,29 @@ class RuntimeSchedulerService:
         )
 
     def _is_schedule_enabled(self, config: Config) -> bool:
-        return self._force_enabled or bool(getattr(config, "schedule_enabled", False))
+        return (self._force_enabled or bool(getattr(config, "schedule_enabled", False))
+                or bool(getattr(config, "intraday_monitor_enabled", False)))
 
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
-        return self._current_agent_event_monitor_background_tasks(config)
+        entries = self._current_agent_event_monitor_background_tasks(config)
+        from src.services.intraday_monitor import build_intraday_background_tasks
+
+        name = 'intraday_monitor'
+        if not getattr(config, 'intraday_monitor_enabled', False):
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return entries
+        cached = self._background_task_cache.get(name)
+        if cached is None:
+            cached = build_intraday_background_tasks(config, config_provider=self._reload_config)[0]
+            self._background_task_cache[name] = cached
+        entries.append({**cached,
+                        'interval_seconds': max(30, config.intraday_monitor_interval_seconds),
+                        'run_immediately': name not in self._background_task_registered_names})
+        self._background_task_registered_names.add(name)
+        return entries
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"
@@ -723,7 +740,10 @@ class RuntimeSchedulerService:
                 register_signals=False,
                 pass_scheduled_for=True,
             )
-            if run_immediately and self._run_immediately_in_background:
+            daily_enabled = self._force_enabled or bool(getattr(config, 'schedule_enabled', False))
+            if not daily_enabled:
+                pass  # Monitoring alone must never turn on daily LLM analysis.
+            elif run_immediately and self._run_immediately_in_background:
                 scheduler.set_daily_task(scheduled_analysis, run_immediately=False)
             else:
                 scheduler.set_daily_task(
@@ -737,7 +757,7 @@ class RuntimeSchedulerService:
                     run_immediately=entry.get("run_immediately", False),
                     name=entry.get("name"),
                 )
-            if run_immediately and self._run_immediately_in_background:
+            if daily_enabled and run_immediately and self._run_immediately_in_background:
                 self._run_in_background_thread(scheduled_analysis)
             thread = threading.Thread(
                 target=scheduler.run,

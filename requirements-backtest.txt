@@ -1,0 +1,2 @@
+# Optional standalone GPL-3.0 research adapter; not imported by the application.
+backtrader==1.9.78.123

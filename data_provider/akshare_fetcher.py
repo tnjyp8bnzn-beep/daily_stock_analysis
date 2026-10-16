@@ -30,7 +30,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -227,6 +227,35 @@ def _parse_tencent_amount(fields: List[str]) -> Optional[float]:
 
     amount_wan = safe_float(fields[37]) if len(fields) > 37 and fields[37] else None
     return amount_wan * 10000 if amount_wan is not None else None
+
+
+def _tencent_quote_from_fields(stock_code: str, fields: List[str], fetched_at: str) -> Optional[UnifiedRealtimeQuote]:
+    """Parse one Tencent row for both single and batched requests, preserving units."""
+    if len(fields) < 45 or fields[2] != stock_code:
+        return None
+    return UnifiedRealtimeQuote(
+        code=stock_code,
+        name=fields[1],
+        source=RealtimeSource.TENCENT,
+        provider_timestamp=_tencent_quote_time(fields),
+        fetched_at=fetched_at,
+        price=safe_float(fields[3]),
+        change_pct=safe_float(fields[32]),
+        change_amount=safe_float(fields[31]),
+        volume=_normalize_tencent_volume(fields),
+        amount=_parse_tencent_amount(fields),
+        open_price=safe_float(fields[5]),
+        high=safe_float(fields[33]),
+        low=safe_float(fields[34]),
+        pre_close=safe_float(fields[4]),
+        turnover_rate=safe_float(fields[38]) if len(fields) > 38 else None,
+        amplitude=safe_float(fields[43]) if len(fields) > 43 else None,
+        volume_ratio=safe_float(fields[49]) if len(fields) > 49 else None,
+        pe_ratio=safe_float(fields[39]) if len(fields) > 39 else None,
+        pb_ratio=safe_float(fields[46]) if len(fields) > 46 else None,
+        circ_mv=safe_float(fields[44]) * 100000000 if len(fields) > 44 and fields[44] else None,
+        total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,
+    )
 
 
 def is_hk_stock_code(stock_code: str) -> bool:
@@ -1494,35 +1523,12 @@ class AkshareFetcher(BaseFetcher):
             
             circuit_breaker.record_success(source_key)
             
-            # 腾讯数据字段顺序（完整）：
-            # 1:名称 2:代码 3:最新价 4:昨收 5:今开 6:成交量 7:外盘 8:内盘
-            # 9-28:买卖五档 30:时间戳 31:涨跌额 32:涨跌幅(%) 33:最高 34:最低 35:收盘/成交量/成交额
-            # 36:成交量(口径随 payload 变化) 37:成交额(万) 38:换手率(%) 39:市盈率 43:振幅(%)
-            # 44:流通市值(亿) 45:总市值(亿) 46:市净率 47:涨停价 48:跌停价 49:量比
-            # 使用 realtime_types.py 中的统一转换函数
-            amount = _parse_tencent_amount(fields)
-            quote = UnifiedRealtimeQuote(
-                code=stock_code,
-                name=fields[1] if len(fields) > 1 else "",
-                source=RealtimeSource.TENCENT,
-                provider_timestamp=_tencent_quote_time(fields),
-                price=safe_float(fields[3]),
-                change_pct=safe_float(fields[32]),
-                change_amount=safe_float(fields[31]) if len(fields) > 31 else None,
-                volume=_normalize_tencent_volume(fields),
-                amount=amount,
-                open_price=safe_float(fields[5]),
-                high=safe_float(fields[33]) if len(fields) > 33 else None,  # 修正：字段 33 是最高价
-                low=safe_float(fields[34]) if len(fields) > 34 else None,  # 修正：字段 34 是最低价
-                pre_close=safe_float(fields[4]),
-                turnover_rate=safe_float(fields[38]) if len(fields) > 38 else None,
-                amplitude=safe_float(fields[43]) if len(fields) > 43 else None,
-                volume_ratio=safe_float(fields[49]) if len(fields) > 49 else None,  # 量比
-                pe_ratio=safe_float(fields[39]) if len(fields) > 39 else None,  # 市盈率
-                pb_ratio=safe_float(fields[46]) if len(fields) > 46 else None,  # 市净率
-                circ_mv=safe_float(fields[44]) * 100000000 if len(fields) > 44 and fields[44] else None,  # 流通市值(亿->元)
-                total_mv=safe_float(fields[45]) * 100000000 if len(fields) > 45 and fields[45] else None,  # 总市值(亿->元)
+            quote = _tencent_quote_from_fields(
+                stock_code, fields, datetime.now(timezone.utc).isoformat()
             )
+            if quote is None:
+                circuit_breaker.record_failure(source_key, 'symbol_mismatch')
+                return None
             
             logger.info(
                 f"[实时行情-腾讯] {stock_code} {quote.name}: endpoint={TENCENT_REALTIME_ENDPOINT}, "
@@ -1547,6 +1553,49 @@ class AkshareFetcher(BaseFetcher):
             logger.info(failure_message)
             circuit_breaker.record_failure(source_key, failure_message)
             return None
+
+    def get_tencent_quotes_batch(self, stock_codes: List[str]) -> Dict[str, UnifiedRealtimeQuote]:
+        """Fetch a small watchlist in one request; absent rows fall back per symbol."""
+        circuit_breaker = get_realtime_circuit_breaker()
+        source_key = 'akshare_tencent'
+        if not circuit_breaker.is_available(source_key):
+            return {}
+        symbols = {code: _to_sina_tx_symbol(code) for code in dict.fromkeys(stock_codes)
+                   if len(code) == 6 and code.isdigit()}
+        quotes: Dict[str, UnifiedRealtimeQuote] = {}
+        # Bound URL length and keep individual chunks independent on provider failures.
+        items = list(symbols.items())
+        for offset in range(0, len(items), 20):
+            chunk = items[offset:offset + 20]
+            by_symbol = {symbol: code for code, symbol in chunk}
+            try:
+                self._enforce_rate_limit()
+                response = requests.get(
+                    f"https://{TENCENT_REALTIME_ENDPOINT}=" + ','.join(by_symbol),
+                    headers={'Referer': 'https://finance.qq.com', 'User-Agent': random.choice(USER_AGENTS)},
+                    timeout=10,
+                )
+                response.raise_for_status()
+                response.encoding = 'gbk'
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                for line in response.text.split(';'):
+                    prefix, separator, remainder = line.strip().partition('="')
+                    if not separator:
+                        continue
+                    code = by_symbol.get(prefix.removeprefix('v_'))
+                    if code is None:
+                        continue
+                    fields = remainder.split('"', 1)[0].split('~')
+                    quote = _tencent_quote_from_fields(code, fields, fetched_at)
+                    if quote is not None:
+                        quotes[code] = quote
+            except Exception as exc:
+                logger.warning('Tencent batch quote fetch failed: %s', type(exc).__name__)
+        if quotes:
+            circuit_breaker.record_success(source_key)
+        elif items:
+            circuit_breaker.record_failure(source_key, 'batch_no_valid_rows')
+        return quotes
     
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """

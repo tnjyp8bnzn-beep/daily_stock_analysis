@@ -695,6 +695,8 @@ class DataFetcherManager:
         self._fetcher_call_locks_lock = RLock()
         self._stock_name_cache: Dict[str, str] = {}
         self._stock_name_cache_lock = RLock()
+        self._intraday_tencent_quotes = {}
+        self._intraday_tencent_prefetched_at = 0.0
         
         if fetchers:
             # 按优先级排序
@@ -2200,22 +2202,24 @@ class DataFetcherManager:
         """返回可用数据源名称列表"""
         return [f.name for f in self._get_fetchers_snapshot()]
     
-    def prefetch_realtime_quotes(self, stock_codes: List[str]) -> int:
+    def prefetch_realtime_quotes(self, stock_codes: List[str], *, force_refresh: bool = False) -> int:
         """
         批量预取实时行情数据（在分析开始前调用）
         
         策略：
         1. 检查优先级中是否包含适合预取的数据源（efinance/akshare_em/tushare/tickflow）
-        2. 如果不包含，跳过预取（新浪/腾讯是单股票查询，无需预取）
+        2. 盘中显式刷新且腾讯排首位时，一次请求预取小自选池
         3. 如果自选股数量 >= 5 且使用可预取数据源，则预取填充缓存
         
         这样做的好处：
-        - 使用新浪/腾讯时：每只股票独立查询，无全量拉取问题
+        - 默认日报仍逐股取新浪/腾讯；盘中腾讯自选池可批量取，缺股逐股回退
         - 使用 efinance/东财/Tushare 时：预取一次，后续缓存命中
         - 使用 TickFlow 时：按当前自选股批量预取，避免逐股重复请求
         
         Args:
             stock_codes: 待分析的股票代码列表
+            force_refresh: Allow small explicit polling batches. TickFlow fetches
+                fresh symbols; other providers retain their own cache policies.
             
         Returns:
             预取的股票数量（0 表示跳过预取）
@@ -2246,6 +2250,23 @@ class DataFetcherManager:
             logger.debug("[预取] component=realtime_prefetch action=skip reason=realtime_quote_disabled")
             return 0
         
+        # Tencent's first-priority watchlist can use one request. This cache is
+        # explicit to the monitor cycle; ordinary daily-report behavior is unchanged.
+        priority_list = [s.strip() for s in config.realtime_source_priority.lower().split(',')]
+        if force_refresh:
+            self._intraday_tencent_quotes = {}
+            self._intraday_tencent_prefetched_at = 0.0
+            if stock_codes and priority_list[0] in ('tencent', 'akshare_qq'):
+                fetcher = self._get_fetcher_by_name('AkshareFetcher', capability='realtime_quote')
+                if fetcher is not None and hasattr(fetcher, 'get_tencent_quotes_batch'):
+                    try:
+                        quotes = self._call_fetcher_method(fetcher, 'get_tencent_quotes_batch', stock_codes)
+                        self._intraday_tencent_quotes = quotes or {}
+                        self._intraday_tencent_prefetched_at = time.monotonic()
+                        return len(self._intraday_tencent_quotes)
+                    except Exception as exc:
+                        logger.warning('Tencent watchlist prefetch failed: %s', type(exc).__name__)
+
         # 检查优先级中是否包含适合批量预取的数据源
         # efinance/akshare_em/tushare 通过一次调用填充全市场缓存；
         # tickflow 通过 symbols 批量接口预取当前自选股缓存。
@@ -2253,7 +2274,7 @@ class DataFetcherManager:
         prefetch_sources = ['efinance', 'akshare_em', 'tushare', 'tickflow']
         
         # 如果优先级中前两个都不是可预取数据源，跳过预取
-        # 因为新浪/腾讯是单股票查询，不需要预取
+        # 新浪及非监控场景腾讯仍逐股查询
         priority_list = [s.strip() for s in priority.split(',')]
         first_prefetch_source_index = None
         for i, source in enumerate(priority_list):
@@ -2270,7 +2291,7 @@ class DataFetcherManager:
             return 0
         
         # 如果股票数量少于 5 个，不进行批量预取（逐个查询更高效）
-        if len(stock_codes) < 5:
+        if not stock_codes or (len(stock_codes) < 5 and not force_refresh):
             logger.info(
                 "[预取] component=realtime_prefetch action=skip reason=small_batch "
                 "stock_count=%d threshold=5 prefetch_source=%s",
@@ -2461,7 +2482,8 @@ class DataFetcherManager:
         return quote
     
     def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True,
-                           analysis_target: Optional[AnalysisTarget] = None):
+                           analysis_target: Optional[AnalysisTarget] = None,
+                           quote_acceptor=None):
         """
         获取实时行情数据（自动故障切换）
         
@@ -2700,7 +2722,12 @@ class DataFetcherManager:
                             provider=fetcher.name,
                             operation="get_realtime_quote",
                         )
-                        quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent")
+                        cached = getattr(self, '_intraday_tencent_quotes', {})
+                        cache_age = time.monotonic() - getattr(self, '_intraday_tencent_prefetched_at', 0.0)
+                        if quote_acceptor is not None and 0 <= cache_age <= 90 and stock_code in cached:
+                            quote = cached[stock_code]
+                        else:
+                            quote = self._call_fetcher_method(fetcher, 'get_realtime_quote', stock_code, source="tencent")
                 
                 elif source == "tushare":
                     fetcher = self._get_fetcher_by_name("TushareFetcher", capability="realtime_quote")
@@ -2727,6 +2754,10 @@ class DataFetcherManager:
                     raise ValueError("Realtime provider returned another target")
                 
                 if quote is not None and quote.has_basic_data():
+                    # Optional strict intraday gate: stale caches must fall through
+                    # to the next configured source, never masquerade as a fresh poll.
+                    if quote_acceptor is not None and not quote_acceptor(quote):
+                        raise ValueError("intraday_quote_rejected")
                     record_provider_run(
                         data_type="realtime_quote",
                         provider=provider_name,
