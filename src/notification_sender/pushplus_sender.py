@@ -66,7 +66,7 @@ class PushplusSender:
             logger.warning("PushPlus Token 未配置，跳过推送")
             return False
 
-        api_url = "http://www.pushplus.plus/send"
+        api_url = "https://www.pushplus.plus/send"
 
         if title is None:
             date_str = datetime.now().strftime('%Y-%m-%d')
@@ -95,7 +95,8 @@ class PushplusSender:
                 timeout_seconds=timeout_seconds,
             )
         except Exception as e:
-            logger.error(f"发送 PushPlus 消息失败: {e}")
+            safe_error = str(e).replace(self._pushplus_token, '[REDACTED]')
+            logger.error("发送 PushPlus 消息失败: %s", safe_error)
             return False
 
     def _send_pushplus_message(
@@ -120,12 +121,18 @@ class PushplusSender:
 
         if response.status_code == 200:
             result = response.json()
+            if not isinstance(result, dict):
+                logger.error("PushPlus 响应格式错误，推送失败")
+                return False
             if result.get('code') == 200:
-                logger.info("PushPlus 消息发送成功")
+                logger.info("PushPlus 已受理消息（code=200，最终送达以平台记录为准）")
                 return True
 
-            error_msg = result.get('msg', '未知错误')
-            logger.error(f"PushPlus 返回错误: {error_msg}")
+            error_msg = str(result.get('msg') or '未知错误').replace(self._pushplus_token, '[REDACTED]')
+            error_code = str(result.get('code', 'unknown')).replace(self._pushplus_token, '[REDACTED]')
+            logger.error("PushPlus 推送失败: code=%s, msg=%s", error_code, error_msg)
+            if any(word in error_msg.lower() for word in ('实名', '未认证', 'real name', 'real-name')):
+                logger.error("PushPlus 账户未完成实名认证，请登录 PushPlus 官网完成实名认证后重试；本次推送失败。")
             return False
 
         logger.error(f"PushPlus 请求失败: HTTP {response.status_code}")

@@ -938,6 +938,9 @@ class StockAnalysisPipeline:
                 )
 
             if result:
+                from src.report_consistency import apply_report_consistency
+
+                apply_report_consistency(result, enhanced_context, news_context)
                 self._append_daily_data_source(result, context, analysis_target)
 
             # Step 8: 保存分析历史记录
@@ -1027,6 +1030,8 @@ class StockAnalysisPipeline:
             增强后的上下文
         """
         enhanced = context.copy()
+        # Keep the provider's daily bar separate from any realtime MA overlay.
+        enhanced['daily_snapshot'] = dict(context.get('today') or {})
         enhanced["report_language"] = normalize_report_language(getattr(self.config, "report_language", "zh"))
         
         # 添加股票名称
@@ -1825,6 +1830,16 @@ class StockAnalysisPipeline:
                     )
 
             if result:
+                from src.report_consistency import apply_report_consistency
+
+                report_context = {
+                    **(analysis_context or {}),
+                    'realtime': initial_context.get('realtime_quote') or {},
+                    'market_phase_context': market_phase_context or {},
+                    'fundamental_context': fundamental_context,
+                }
+                result.market_snapshot = self.analyzer._build_market_snapshot(report_context)
+                apply_report_consistency(result, report_context, initial_context.get('news_context'))
                 self._append_daily_data_source(
                     result,
                     analysis_context,

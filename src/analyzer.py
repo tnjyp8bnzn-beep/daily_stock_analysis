@@ -199,9 +199,11 @@ def _phase_aware_quote_labels(context: Dict[str, Any], report_language: str = "z
 
 def _phase_aware_quote_labels_zh(context: Dict[str, Any]) -> Tuple[str, str]:
     """Choose Chinese quote-table labels that do not conflict with phase context."""
+    if _today_has_realtime_overlay(context.get("today")):
+        return "最新行情", "实时估算价"
     phase_context = context.get("market_phase_context")
     if not isinstance(phase_context, dict):
-        return "今日行情", "收盘价"
+        return "最新行情", "最新价"
 
     phase = str(phase_context.get("phase") or "").strip()
     if phase in {"premarket", "non_trading"}:
@@ -220,7 +222,10 @@ def _phase_aware_quote_labels_zh(context: Dict[str, Any]) -> Tuple[str, str]:
     ):
         return "最新行情", "盘中估算价"
 
-    return "今日行情", "收盘价"
+    from src.quote_provenance import quote_metadata
+    if quote_metadata(context)["daily_is_final"]:
+        return "今日行情", "收盘价"
+    return "最新行情", "最新价"
 
 
 def _should_hide_regular_session_ohlc(context: Dict[str, Any]) -> bool:
@@ -4275,6 +4280,10 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                     )
                     break
 
+            from src.report_consistency import apply_report_consistency
+
+            apply_report_consistency(result, context, news_context)
+
             if should_persist_usage_telemetry(llm_usage):
                 persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
@@ -4944,6 +4953,25 @@ When answering technical questions (such as moving averages or bias), state dire
 在回答技术面问题（如均线、乖离率）时，请直接说明“数据缺失，无法判断”，**严禁编造数据**。
 """
 
+        from src.quote_provenance import quote_metadata, provenance_lines
+        prompt += "\n" + "\n".join(provenance_lines(quote_metadata(context), report_language))
+        if english:
+            prompt += """
+Evidence rules (mandatory): use only supplied, verifiable evidence. Never invent live
+news, capital flows, market sentiment, or institutional views. Cite the supplied URL,
+source and publication/quote time for factual claims. If absent, write data missing.
+Volume/price changes do not establish capital flows or institutional activity.
+The final action, conclusion, position advice and entry plan must agree. Missing
+price/technical evidence permits Watch or Insufficient Data only. A latest quote
+or an estimated daily bar is not an exchange-confirmed closing price.
+"""
+        else:
+            prompt += """
+证据约束：严禁编造实时新闻、资金流向、市场情绪或机构观点；必须引用输入中
+可核查的来源、链接及时间。缺失时写“数据缺失”，不得从成交量推断主力资金。
+结论与操作计划必须一致；价格或技术依据缺失只能观望或数据不足。
+"""
+
         # 明确的输出要求
         if english:
             prompt += f"""
@@ -5149,7 +5177,7 @@ Output the complete Decision Dashboard in JSON format."""
 
     def _build_market_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """构建当日行情快照（展示用）"""
-        today = context.get('today', {}) or {}
+        today = context.get('daily_snapshot', context.get('today')) or {}
         realtime = context.get('realtime', {}) or {}
         yesterday = context.get('yesterday', {}) or {}
 
@@ -5193,6 +5221,9 @@ Output the complete Decision Dashboard in JSON format."""
                 "source": getattr(realtime.get('source'), 'value', realtime.get('source', 'N/A')),
             })
 
+        from src.quote_provenance import quote_metadata
+
+        snapshot.update(quote_metadata(context))
         return snapshot
 
     def _check_content_integrity(

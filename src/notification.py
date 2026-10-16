@@ -2147,10 +2147,11 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
 
+        close_label = labels['close_label'] if snapshot.get('daily_is_final') else labels['partial_price_label']
         lines.extend([
             f"### 📈 {labels['market_snapshot_heading']}",
             "",
-            f"| {labels['close_label']} | {labels['prev_close_label']} | {labels['open_label']} | {labels['high_label']} | {labels['low_label']} | {labels['change_pct_label']} | {labels['change_amount_label']} | {labels['amplitude_label']} | {labels['volume_label']} | {labels['amount_label']} |",
+            f"| {close_label} | {labels['prev_close_label']} | {labels['open_label']} | {labels['high_label']} | {labels['low_label']} | {labels['change_pct_label']} | {labels['change_amount_label']} | {labels['amplitude_label']} | {labels['volume_label']} | {labels['amount_label']} |",
             "|------|------|------|------|------|-------|-------|------|--------|--------|",
             f"| {snapshot.get('close', 'N/A')} | {snapshot.get('prev_close', 'N/A')} | "
             f"{snapshot.get('open', 'N/A')} | {snapshot.get('high', 'N/A')} | "
@@ -2169,6 +2170,8 @@ class NotificationService(
                 f"{snapshot.get('turnover_rate', 'N/A')} | {display_source} |",
             ])
 
+        from src.quote_provenance import provenance_lines
+        lines.extend(provenance_lines(snapshot, report_language))
         lines.append("")
 
     _CURRENCY_SUFFIX = {
