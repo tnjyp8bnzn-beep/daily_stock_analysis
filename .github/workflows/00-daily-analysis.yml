@@ -4,6 +4,9 @@ on:
   # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
   schedule:
     - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    # 可选盘中巡检：启用 Repository Variable ENABLE_INTRADAY_MONITOR=true 后生效
+    - cron: '0 2 * * 1-5'      # 工作日北京时间 10:00
+    - cron: '30 6 * * 1-5'     # 工作日北京时间 14:30
   
   # 手动触发
   workflow_dispatch:
@@ -30,6 +33,8 @@ concurrency:
 
 jobs:
   analyze:
+    # 盘中巡检默认禁用；原18:00定时任务及手动运行不受影响
+    if: ${{ github.event_name != 'schedule' || github.event.schedule == '0 10 * * 1-5' || vars.ENABLE_INTRADAY_MONITOR == 'true' }}
     runs-on: ubuntu-latest
     # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
@@ -473,6 +478,10 @@ jobs:
 
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"
+          # 盘中巡检仅分析自选股，不重复生成大盘复盘；仍是定时分析，不是实时价格触发引擎
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "${{ github.event.schedule }}" != "0 10 * * 1-5" ]; then
+            MODE="stocks-only"
+          fi
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
