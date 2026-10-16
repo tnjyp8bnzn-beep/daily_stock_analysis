@@ -129,6 +129,10 @@ def test_tencent_provider_timestamp_is_parsed_without_using_fetch_time():
     ('2026-10-16T10:00:00+08:00', '2026-10-16T10:02:00+08:00', False, 'fresh'),
     ('2026-10-16T10:00:00+08:00', '2026-10-16T10:12:00+08:00', True, 'stale'),
     ('2026-10-16T15:00:01+08:00', '2026-10-16T15:00:00+08:00', None, 'unknown'),
+    ('2026-10-17T10:00:00+08:00', '2026-10-17T10:02:00+08:00', None, 'unknown_session'),
+    ('2026-10-16T16:14:00+08:00', '2026-10-16T16:15:00+08:00', None, 'unknown_session'),
+    ('2026-10-16T12:00:00+08:00', '2026-10-16T12:02:00+08:00', None, 'unknown_session'),
+    ('2026-10-16T09:00:00+08:00', '2026-10-16T09:02:00+08:00', None, 'unknown_session'),
 ])
 def test_session_freshness_keeps_actual_age(timestamp, fetched, stale, status):
     quote = _quote(provider_timestamp=timestamp, fetched_at=fetched)
@@ -271,6 +275,14 @@ def test_missing_calendar_cannot_certify_a_session_close():
     with patch.dict('sys.modules', {'exchange_calendars': None}):
         DataFetcherManager.__new__(DataFetcherManager)._enrich_realtime_quote(quote)
     assert quote.is_stale is True and quote.freshness_status == 'stale'
+
+
+def test_recent_incomplete_intraday_quote_is_not_certified_fresh():
+    quote = _quote(provider_timestamp='2026-10-16T10:00:00+08:00',
+                   fetched_at='2026-10-16T10:02:00+08:00', amount=None)
+    DataFetcherManager.__new__(DataFetcherManager)._enrich_realtime_quote(quote)
+    assert quote.is_stale is None and quote.freshness_status == 'incomplete_quote'
+    assert quote.stale_seconds == 120
 
 
 def test_technical_warmup_and_invalid_input_are_explicit():

@@ -40,6 +40,24 @@ def quote_freshness(quote: dict, provider_time: datetime, fetched_at: datetime,
             start, end = calendar.session_break_start(session), calendar.session_break_end(session)
             if start <= fetched_at < end and start <= provider_time <= start + timedelta(minutes=1):
                 return (False, 'session_break') if complete else (None, 'incomplete_break')
+        # A recent vendor heartbeat outside a real session is not proof of a
+        # regular-session trade. Keep the age, but do not certify it as fresh.
+        provider_date = provider_time.astimezone(ZoneInfo(MARKET_TIMEZONE[market])).date()
+        if not calendar.is_session(provider_date):
+            return (True, 'stale') if age > ttl else (None, 'unknown_session')
+        provider_session = calendar.date_to_session(provider_date)
+        provider_open = calendar.session_open(provider_session)
+        provider_close = calendar.session_close(provider_session)
+        in_session = provider_open <= provider_time <= provider_close
+        if calendar.session_has_break(provider_session):
+            in_session = in_session and not (
+                calendar.session_break_start(provider_session) < provider_time
+                < calendar.session_break_end(provider_session)
+            )
+        if not in_session:
+            return (True, 'stale') if age > ttl else (None, 'unknown_session')
+        if not complete and age <= ttl:
+            return None, 'incomplete_quote'
     except (ImportError, KeyError, ValueError, OverflowError, TypeError):
         return (True, 'stale') if age > ttl else (None, 'unknown')
     return (True, 'stale') if age > ttl else (False, 'fresh')
