@@ -46,6 +46,7 @@ _ENGLISH_SECTION_PATTERNS = {
     "market_summary": r"###\s*(?:1\.\s*)?Market Summary",
     "index_commentary": r"###\s*(?:2\.\s*)?(?:Index Commentary|Major Indices)",
     "sector_highlights": r"###\s*(?:4\.\s*)?(?:Sector Highlights|Sector/Theme Highlights)",
+    "news_catalysts": r"###\s*(?:5\.\s*)?(?:News Catalysts|News Highlights)",
 }
 
 _CHINESE_SECTION_PATTERNS = {
@@ -72,6 +73,9 @@ class MarketIndex:
     volume: float = 0.0          # 成交量（手）
     amount: float = 0.0          # 成交额（元）
     amplitude: float = 0.0       # 振幅(%)
+    source: Optional[str] = None
+    provider_timestamp: Optional[str] = None
+    fetched_at: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -107,6 +111,7 @@ class MarketOverview:
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
     top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
     bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
+    data_provenance: Dict = field(default_factory=dict)
 
 
 @dataclass
@@ -601,7 +606,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                         prev_close=item['prev_close'],
                         volume=item['volume'],
                         amount=item['amount'],
-                        amplitude=item['amplitude']
+                        amplitude=item['amplitude'],
+                        source=item.get('source'),
+                        provider_timestamp=item.get('provider_timestamp'),
+                        fetched_at=item.get('fetched_at'),
                     )
                     indices.append(index)
 
@@ -630,9 +638,11 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 overview.up_count = stats.get('up_count', 0)
                 overview.down_count = stats.get('down_count', 0)
                 overview.flat_count = stats.get('flat_count', 0)
-                overview.limit_up_count = stats.get('limit_up_count', 0)
-                overview.limit_down_count = stats.get('limit_down_count', 0)
+                overview.limit_up_count = stats.get('limit_up_count') or 0
+                overview.limit_down_count = stats.get('limit_down_count') or 0
                 overview.total_amount = stats.get('total_amount', 0.0)
+                overview.data_provenance['breadth'] = {key: stats.get(key) for key in
+                    ('source', 'trade_date', 'provider_timestamp', 'fetched_at', 'url')}
 
                 logger.info(
                     "[大盘] %s action=get_market_stats status=success up=%s down=%s flat=%s "
@@ -650,6 +660,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         except Exception as e:
             logger.error("[大盘] %s action=get_market_stats status=failed error=%s", self._log_context(), e)
+
+        if not overview.total_amount:
+            overview.data_provenance['total_amount'] = {
+                'status': 'missing', 'reason': '全市场成交额接口未返回；未将成分指数成交额冒充全市场成交额'}
 
     def _get_sector_rankings(self, overview: MarketOverview):
         """获取板块涨跌榜"""
@@ -725,6 +739,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             新闻列表
         """
+        if self.region == 'cn' and (not self.search_service or not self.search_service.is_available):
+            try:
+                from data_provider.cn_public import get_public_cn_data
+                return get_public_cn_data().news('market').get('data') or []
+            except Exception as exc:
+                logger.warning('[大盘] public news fallback failed: %s', type(exc).__name__)
+                return []
         if not self.search_service:
             logger.warning(
                 "[大盘] %s action=search_market_news status=skipped reason=no_search_service",
@@ -1178,6 +1199,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 )
                 review = f"{review.rstrip()}\n\n{fallback_heading}\n{sector_block}\n"
 
+        # A search-result count/title is not evidence. Only dated linked source
+        # records may bypass model omission and enter the factual report block.
+        verified_news = []
+        for item in (news or []):
+            try:
+                published = pd.Timestamp(self._get_news_field(item, 'published_date')).date()
+                age_days = (pd.Timestamp(overview.date).date() - published).days
+            except (ValueError, TypeError):
+                continue
+            if (0 <= age_days <= 3 and self._get_news_field(item, 'source')
+                    and self._get_news_field(item, 'url').startswith(('https://', 'http://'))):
+                verified_news.append(item)
+        news_block = self._build_news_block(verified_news)
+        if news_block:
+            updated = self._insert_after_section(review, patterns['news_catalysts'], news_block)
+            if updated == review:
+                heading = '### News Catalysts' if self._get_review_language() == 'en' else '### 五、消息催化'
+                updated = f'{review.rstrip()}\n\n{heading}\n{news_block}\n'
+            review = updated
+
         return review
 
     @staticmethod
@@ -1226,6 +1267,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     f"Limit-up {overview.limit_up_count} / Limit-down {overview.limit_down_count}; "
                     f"Turnover {overview.total_amount:.0f} ({self._get_turnover_unit_label()})"
                 )
+            for name, data in overview.data_provenance.items():
+                lines.append(f"- Data provenance {name}: {data}")
             return "\n".join(lines)
         lines = []
         score = light["score"] if isinstance(light, dict) else None
@@ -1253,6 +1296,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     f"| 两市成交额 | {overview.total_amount:.0f} 亿 | {self._describe_turnover(overview.total_amount)} |",
                 ]
             )
+        for name, data in overview.data_provenance.items():
+            lines.append(f"- 数据来源 {name}: {data}")
         return "\n".join(lines)
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
@@ -1375,6 +1420,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 f"{self._format_optional_number(idx.open)} | {self._format_optional_number(idx.high)} | "
                 f"{self._format_optional_number(idx.low)} | {self._format_optional_pct(idx.amplitude)} | {amount_str} |"
             )
+        for idx in overview.indices:
+            if idx.source or idx.fetched_at or idx.provider_timestamp:
+                lines.append(f"- {idx.name} 来源：{idx.source or '无法确认'}；供应商报价时间："
+                             f"{idx.provider_timestamp or '无法确认'}；获取：{idx.fetched_at or '无法确认'}")
         return "\n".join(lines)
 
     def _build_sector_block(self, overview: MarketOverview) -> str:

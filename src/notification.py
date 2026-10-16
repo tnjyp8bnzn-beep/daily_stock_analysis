@@ -2140,6 +2140,8 @@ class NotificationService(
         return mapping[normalize_report_language(language)]
 
     def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
+        from src.report_consistency import verified_data_lines
+        lines.extend(verified_data_lines(result))
         snapshot = getattr(result, 'market_snapshot', None)
         if not snapshot:
             return

@@ -150,8 +150,9 @@ def test_watch_conclusion_removes_entry_position_and_sniper_instructions():
     assert result.action == 'watch' and result.decision_type == 'hold'
     assert '建仓' not in str(result.dashboard['battle_plan'])
     points = result.dashboard['battle_plan']['sniper_points']
-    assert 'ideal_buy' not in points and 'secondary_buy' not in points
-    assert '数据缺失' in points['stop_loss']
+    assert points['ideal_buy'] is None and points['secondary_buy'] is None
+    assert points['stop_loss'] is None
+    assert result.dashboard['price_validation']['stop_loss']['reason']
     assert '观望' in result.dashboard['core_conclusion']['one_sentence']
 
 
@@ -305,13 +306,14 @@ def test_watch_preserves_protective_stop_and_dashboard_metadata():
         'action_checklist': ['跌破95止损卖出', '放量买入'],
         'risk_budget': '1%',
     }
-    apply_report_consistency(result, {})
+    apply_report_consistency(result, _context())
     assert result.action == 'watch' and result.decision_type == 'hold'
     assert result.dashboard['decision_type'] == result.decision_type
     assert result.dashboard['sentiment_score'] == result.sentiment_score
     assert result.dashboard['core_conclusion']['time_sensitivity'] == '当日有效'
     battle = result.dashboard['battle_plan']
-    assert battle['sniper_points'] == {'stop_loss': 95}
+    assert battle['sniper_points'] == {'stop_loss': 95, 'ideal_buy': None, 'secondary_buy': None, 'take_profit': None, 'warning_price': None}
+    assert result.dashboard['price_validation']['stop_loss']['status'] == 'supported_plan'
     assert battle['position_strategy']['risk_control'] == '跌破95止损卖出'
     assert '跌破95止损卖出' in battle['action_checklist']
     assert '放量买入' not in battle['action_checklist']
@@ -322,10 +324,11 @@ def test_watch_preserves_protective_stop_and_dashboard_metadata():
 
 def test_sparse_legacy_result_without_decision_type_fails_closed_without_crashing():
     result = SimpleNamespace(success=True, sentiment_score=90, operation_advice='持有', analysis_summary='技术待确认')
-    apply_report_consistency(result, {})
+    apply_report_consistency(result, _context())
     assert result.action == 'watch' and result.decision_type == 'hold'
     assert result.dashboard['decision_type'] == 'hold'
-    assert '数据缺失' in result.dashboard['battle_plan']['sniper_points']['stop_loss']
+    assert result.dashboard['battle_plan']['sniper_points']['stop_loss'] is None
+    assert result.dashboard['price_validation']['stop_loss']['reason']
 
 
 @pytest.mark.parametrize('has_history', [True, False])

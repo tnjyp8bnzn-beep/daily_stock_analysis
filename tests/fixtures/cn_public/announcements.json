@@ -1,0 +1,48 @@
+{
+  "data": {
+    "list": [
+      {
+        "title": "完美世界:关于认购基金份额的进展公告",
+        "notice_date": "2026-10-17 00:00:00",
+        "art_code": "AN202610161830617340",
+        "codes": [
+          {
+            "ann_type": "A,SZA",
+            "inner_code": "18040147925994",
+            "market_code": "0",
+            "short_name": "完美世界",
+            "stock_code": "002624"
+          }
+        ]
+      },
+      {
+        "title": "完美世界:关于认购投资基金份额的公告",
+        "notice_date": "2026-09-22 00:00:00",
+        "art_code": "AN202609211829728641",
+        "codes": [
+          {
+            "ann_type": "A,SZA",
+            "inner_code": "18040147925994",
+            "market_code": "0",
+            "short_name": "完美世界",
+            "stock_code": "002624"
+          }
+        ]
+      },
+      {
+        "title": "完美世界:第六届董事会第二十五次会议决议公告",
+        "notice_date": "2026-09-22 00:00:00",
+        "art_code": "AN202609211829728640",
+        "codes": [
+          {
+            "ann_type": "A,SZA",
+            "inner_code": "18040147925994",
+            "market_code": "0",
+            "short_name": "完美世界",
+            "stock_code": "002624"
+          }
+        ]
+      }
+    ]
+  }
+}

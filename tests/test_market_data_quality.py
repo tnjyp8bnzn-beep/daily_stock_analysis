@@ -224,7 +224,8 @@ def test_hengtong_conflicting_stop_is_not_replaced_by_an_invented_price():
     assert result.action == 'watch' and result.decision_type == 'hold'
     validation = result.dashboard['stop_loss_validation']
     assert validation['original_value'] == original and validation['anchors'] == {'low': 45.2}
-    assert '数据缺失' in result.dashboard['battle_plan']['sniper_points']['stop_loss']
+    assert result.dashboard['battle_plan']['sniper_points']['stop_loss'] is None
+    assert result.dashboard['price_validation']['stop_loss']['reason']
     assert '不可执行' in result.risk_warning
     assert '严格执行止损' in result.dashboard['battle_plan']['position_strategy']['risk_control']
     apply_report_consistency(result, _context())
@@ -235,7 +236,9 @@ def test_hengtong_conflicting_stop_is_not_replaced_by_an_invented_price():
 def test_consistent_stop_or_independent_protective_level_is_preserved(stop):
     result = _result(stop)
     apply_report_consistency(result, _context())
-    assert result.dashboard['battle_plan']['sniper_points']['stop_loss'] == stop
+    expected = float(str(stop).split('（')[0])
+    assert result.dashboard['battle_plan']['sniper_points']['stop_loss'] == expected
+    assert result.dashboard['price_validation']['stop_loss']['original'] == stop
     assert 'stop_loss_validation' not in result.dashboard
 
 
@@ -300,7 +303,8 @@ def test_nonfinite_or_nonpositive_stop_never_becomes_executable(stop):
     result = _result(stop)
     apply_report_consistency(result, _context())
     assert result.dashboard['stop_loss_validation']['status'] == 'invalid'
-    assert '数据缺失' in result.dashboard['battle_plan']['sniper_points']['stop_loss']
+    assert result.dashboard['battle_plan']['sniper_points']['stop_loss'] is None
+    assert result.dashboard['price_validation']['stop_loss']['reason']
 
 
 def test_ma_anchor_next_to_chinese_text_is_verified():

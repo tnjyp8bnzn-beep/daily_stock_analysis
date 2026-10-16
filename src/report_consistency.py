@@ -36,7 +36,7 @@ _NARRATIVES = (
     'sector_position', 'company_highlights', 'news_summary', 'market_sentiment', 'hot_topics', 'data_sources',
 )
 _AUDIT_KEYS = {'stop_loss_validation', 'report_consistency', 'market_data_validation',
-               'decision_stability', 'decision_score_calibration', 'risk_levels'}
+               'decision_stability', 'decision_score_calibration', 'risk_levels', 'verified_data', 'price_validation', 'data_availability'}
 _VOLUME_CLAIM = re.compile(r'缩量|放量|平量|量能萎缩|成交萎缩|量能平稳|量能正常|'
                            r'\b(?:shrinking|low|high|normal) volume\b', re.I)
 _INTENT_CLAIM = re.compile(r'洗盘|抛压衰竭|抛压耗尽|多头抵抗|承接力|'
@@ -57,6 +57,7 @@ def _map_prose(value: Any, transform, path: str = '') -> Any:
 
 def _prices(text: str) -> list[float]:
     text = re.sub(r'检查项\d+', '', text)
+    text = re.sub(r'T\s*[+＋]\s*\d+|\d{4}-\d{2}-\d{2}', '', text, flags=re.I)
     return [float(match.group().removesuffix('元')) for match in _PRICE.finditer(text)]
 
 
@@ -78,8 +79,10 @@ def _stop_clauses(text: str) -> list[str]:
 def _volume_evidence(context: dict) -> dict:
     rt = context.get('realtime') or context.get('realtime_quote') or {}
     ratio = finite_number(rt.get('volume_ratio'))
+    field_source = (rt.get('field_sources') or {}).get('volume_ratio') or {}
     return {'ratio': ratio if ratio is not None and ratio > 0 else None,
-            'source': rt.get('source'), 'quote_time': rt.get('provider_timestamp')}
+            'source': field_source.get('source') if field_source else rt.get('source'),
+            'quote_time': field_source.get('provider_timestamp') if field_source else rt.get('provider_timestamp')}
 
 
 def sanitize_factual_prose(text: str, evidence: str, language: str = 'zh') -> str:
@@ -156,7 +159,8 @@ def _validate_stop_anchor(dashboard: dict, context: dict, narratives: list | Non
     level = finite_number(numbers[0]) if numbers else None
     trigger_levels = sorted({number for clause in trigger_clauses for number in _prices(clause)})
     conflicting_levels = level is not None and any(abs(level - number) > .011 for number in trigger_levels)
-    invalid = invalid_level or any(
+    unverified_history = bool(re.search(r'近期|前期', text))
+    invalid = invalid_level or unverified_history or (level is None and bool(trigger_levels)) or any(
         value is None or value <= 0 or (level is not None and abs(level - value) > .011)
         for value in anchors.values()) or conflicting_levels
     perspective = dashboard.get('data_perspective') or {}
@@ -170,6 +174,7 @@ def _validate_stop_anchor(dashboard: dict, context: dict, narratives: list | Non
     if invalid:
         dashboard['stop_loss_validation'] = {
             'status': 'invalid', 'reason': ('stop_loss_trigger_conflict' if conflicting_levels else
+                                          'historical_stop_anchor_unverified' if unverified_history else
                                           'stop_loss_anchor_mismatch_or_missing' if anchors else 'stop_loss_value_invalid'),
             'original_value': text if finite_number(original) is None else original,
             'claimed_level': level, 'anchors': anchors,
@@ -242,9 +247,22 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
             return volume_missing
         return value
 
+    def deduplicate(value):
+        if isinstance(value, dict):
+            return {key: item if key in _AUDIT_KEYS else deduplicate(item) for key, item in value.items()}
+        if isinstance(value, list):
+            out = []
+            for item in value:
+                item = deduplicate(item)
+                if isinstance(item, str) and re.search(r'数据缺失|数据不足|Data missing|Insufficient data', item) and item in out:
+                    continue
+                out.append(item)
+            return out
+        return value
+
     # Traverse all displayed narratives, including nested checklist/strategy text.
     for field in _NARRATIVES:
-        setattr(result, field, _map_prose(getattr(result, field, None), clean, field))
+        setattr(result, field, deduplicate(_map_prose(getattr(result, field, None), clean, field)))
 
     # Mandatory disclosure even if the model left these fields empty.
     for field in ('news_summary', 'market_sentiment', 'hot_topics'):
@@ -277,8 +295,8 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
             intel[key] = missing
 
     flow = (context.get('fundamental_context') or {}).get('capital_flow') or {}
-    if (isinstance(flow, dict) and flow.get('status') == 'ok'
-            and flow.get('source') and flow.get('data')):
+    if (isinstance(flow, dict) and flow.get('status') in ('ok', 'partial')
+            and (flow.get('source') or flow.get('source_chain')) and flow.get('data')):
         # Show fetched structured values with their provenance, never model guesses.
         intel['capital_flow'] = json.dumps(flow, ensure_ascii=False, default=str)
 
@@ -323,7 +341,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
     def conflicting(value: Any, *, entry_only: bool = False) -> bool:
         if isinstance(value, dict):
             return any(conflicting(item, entry_only=entry_only) for key, item in value.items()
-                       if key not in _AUDIT_KEYS and key not in {'stop_loss', 'take_profit'})
+                       if key not in _AUDIT_KEYS and key not in {'stop_loss', 'take_profit', 'has_position'})
         if isinstance(value, list):
             return any(conflicting(item, entry_only=entry_only) for item in value)
         if not isinstance(value, str) or value == missing:
@@ -342,6 +360,9 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
                     return True
         return False
 
+    held_advice = (core.get('position_advice') or {}).get('has_position') if isinstance(core, dict) else None
+    if direction == 'hold' and conflicting(held_advice, entry_only=True):
+        conflict = True
     conflict = conflict or any(conflicting(plan) for plan in plans)
     allocation = str(strategy.get('suggested_position', '')) if isinstance(strategy, dict) else ''
     if direction == 'hold' and re.search(r'[1-9]\d*(?:\.\d+)?\s*(?:成|[%％])', allocation):
@@ -359,19 +380,22 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         core = dict(core) if isinstance(core, dict) else {}
         core.update({
             'one_sentence': wait, 'signal_type': localize_action_label('watch', language),
-            'position_advice': {'no_position': wait, 'has_position': wait},
+            'position_advice': {'no_position': wait, 'has_position': held_advice if (
+                isinstance(held_advice, str) and not conflicting(held_advice, entry_only=True)
+                and not stop_invalid and quality['status'] == 'ok') else
+                ('已持仓：不新增仓位，保留既有风控；核实缺失数据后再调整。' if language == 'zh' else wait)},
         })
         dashboard['core_conclusion'] = core
         battle = dict(battle) if isinstance(battle, dict) else {}
         points = battle.get('sniper_points')
         points = dict(points) if isinstance(points, dict) else {}
-        points.pop('ideal_buy', None)
-        points.pop('secondary_buy', None)
+        points['ideal_buy'] = None
+        points['secondary_buy'] = None
         stop_loss = points.get('stop_loss')
         if (stop_invalid or stop_loss is None or isinstance(stop_loss, (list, tuple, dict))
                 or (isinstance(stop_loss, str) and not stop_loss.strip())
                 or (isinstance(stop_loss, (int, float)) and not _positive(stop_loss))):
-            points['stop_loss'] = missing
+            points['stop_loss'] = None
         strategy = dict(strategy) if isinstance(strategy, dict) else {}
         strategy.update({'suggested_position': wait, 'entry_plan': wait})
 
@@ -407,7 +431,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
                 return {
                     key: item if key in {
                         'decision_stability', 'decision_score_calibration',
-                        'market_data_validation', 'stop_loss_validation',
+                        'market_data_validation', 'stop_loss_validation', 'verified_data', 'price_validation', 'risk_levels',
                         'stop_loss', 'take_profit', 'risk_control', 'action_checklist',
                     } else align(item)
                     for key, item in value.items()
@@ -431,8 +455,8 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
                 strategy['suggested_position'] = wait
             points = battle.get('sniper_points')
             if isinstance(points, dict):
-                points.pop('ideal_buy', None)
-                points.pop('secondary_buy', None)
+                points['ideal_buy'] = None
+                points['secondary_buy'] = None
     if advice_action != action_for_score(getattr(result, 'sentiment_score', None)):
         calibration = dashboard.get('decision_score_calibration')
         if not isinstance(calibration, dict):
@@ -458,7 +482,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         claimed = validation.get('claimed_level')
 
         def invalid_trigger(value: Any) -> bool:
-            if not isinstance(value, str) or not _STOP_TRIGGER.search(value):
+            if not isinstance(value, str) or not _stop_clauses(value):
                 return False
             named = re.search(r'(?:今日|当日|今天).{0,3}(?:最低价?|低点)|today.{0,12}low|MA(?:5|10|20|60)(?!\d)', value, re.I)
             numbers = [finite_number(number) for number in re.findall(r'\d+(?:\.\d+)?', value)]
@@ -478,6 +502,45 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         dashboard = result.dashboard
         if stop_warning not in str(getattr(result, 'risk_warning', '') or ''):
             result.risk_warning = f'{getattr(result, "risk_warning", "") or ""}\n{stop_warning}'.strip()
+    intel = dashboard.get('intelligence') or {}
+    verified = (context.get('fundamental_context') or {}).get('verified_data')
+    if isinstance(verified, dict):
+        dashboard['verified_data'] = verified
+        availability = dashboard['data_availability'] = {}
+        fundamental = context.get('fundamental_context') or {}
+        for block_key, fields in (('earnings', ('forecast_summary', 'quick_report', 'dividend')),
+                                  ('capital_flow', ('sector_rankings',)), ('institution', ())):
+            block = fundamental.get(block_key) or {}
+            block_data = block.get('data') or {}
+            for field in fields or (block_key,):
+                value = block_data.get(field) if fields else block_data
+                if not value:
+                    disclosure_key = {'forecast_summary': 'forecast_disclosures', 'quick_report': 'quick_report_disclosures',
+                                      'dividend': 'dividend_disclosures'}.get(field)
+                    if disclosure_key and block_data.get(disclosure_key):
+                        value = {'disclosures': block_data[disclosure_key], 'scope': '公告目录，未提取正文金额或预测区间'}
+                availability[field] = {'value': value or None, 'status': block.get('status', 'missing'),
+                                       'errors': block.get('errors') or [],
+                                       'source_chain': block.get('source_chain') or []}
+        availability['chip'] = {'value': context.get('chip'), **(context.get('chip_availability') or {
+            'status': 'missing', 'reason': '未取得筹码数据，不能由价格或AI推断'})}
+        trend = context.get('trend_analysis') or {}
+        count = trend.get('sample_count')
+        availability['technical'] = {'value': trend, 'sample_count': count,
+            'ma60': (context.get('today') or {}).get('ma60') if count and count >= 60 else None,
+            'reason': 'MA60需至少60根有效日线' if not count or count < 60 else None}
+        news = (verified.get('news') or {}).get('data') or []
+        if news:
+            from data_provider.cn_public import evidence_text
+            intel['latest_news'] = evidence_text({'news': verified['news']})
+            result.news_summary = intel['latest_news']
+        # Keep historical financial facts distinct from forecasts/AI opinion.
+        financials = verified.get('financials') or {}
+        if financials.get('status') == 'ok':
+            result.fundamental_analysis = '历史披露事实（非业绩预测）：' + json.dumps(financials['data'], ensure_ascii=False)
+        flow = verified.get('capital_flow') or {}
+        if flow.get('status') == 'ok':
+            intel['capital_flow'] = json.dumps(flow, ensure_ascii=False)
     missing_dimensions = [key for key in ('capital_flow', 'institutional_views') if intel[key] == missing]
     if missing_dimensions:
         dimension_labels = {
@@ -488,8 +551,109 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         disclosure = ' / '.join(dimension_labels[key] for key in missing_dimensions) + ': ' + missing
         if disclosure not in str(result.risk_warning or ''):
             result.risk_warning = f'{result.risk_warning or ""}\n{disclosure}'.strip()
+    _normalize_price_fields(dashboard, context, quality, stop_invalid)
     previous_adjustments = (dashboard.get('report_consistency') or {}).get('adjustments', [])
     adjustments = sorted(set(adjustments).union(previous_adjustments))
     dashboard['report_consistency'] = {'adjustments': adjustments, 'checked': ['action', 'stop_loss', 'allocation', 'body'],
                                        'volume_evidence': volume_evidence}
     return sorted(set(adjustments))
+
+
+def _normalize_price_fields(dashboard: dict, context: dict, quality: dict, stop_invalid: bool) -> None:
+    """Nullable numeric prices; explanations and original text live in diagnostics."""
+    battle = dashboard.setdefault('battle_plan', {})
+    points = battle.setdefault('sniper_points', {})
+    audit = dashboard.setdefault('price_validation', {})
+    levels = dashboard.setdefault('risk_levels', {})
+    today = context.get('today') or {}
+    for key in ('ideal_buy', 'secondary_buy', 'stop_loss', 'take_profit', 'warning_price'):
+        original = (audit.get(key) or {}).get('original', points.get(key))
+        if key == 'stop_loss' and stop_invalid:
+            original = (dashboard.get('stop_loss_validation') or {}).get('original_value', original)
+        numbers = _prices(str(original)) if isinstance(original, (str, int, float)) and not isinstance(original, bool) else []
+        price = finite_number(numbers[0]) if numbers else None
+        reason = None
+        if (price is None or price <= 0 or re.search(r'数据缺失|数据不足|不可执行|无法|N/A|nan|inf', str(original), re.I)
+                or re.search(r'(?<!\w)-\s*\d', str(original))):
+            reason = 'price_missing_or_invalid'
+        elif quality.get('status') != 'ok':
+            reason = 'insufficient_market_data'
+        elif key == 'stop_loss' and stop_invalid:
+            reason = 'conflicting_stop_condition'
+        elif key == 'stop_loss' and re.search(r'近期|前期', str(original)):
+            reason = 'historical_stop_anchor_unverified'
+        elif key == 'take_profit':
+            periods = re.findall(r'MA(5|10|20|60)(?!\d)', str(original), re.I) or ('5', '10', '20', '60')
+            anchors = [finite_number(today.get('ma' + period)) for period in periods]
+            if not anchors or not any(value is not None and abs(price-value) <= .011 for value in anchors):
+                reason = 'target_basis_unverified'
+        if key in ('ideal_buy', 'secondary_buy') and dashboard.get('action') in ('watch', 'hold', 'avoid', 'alert'):
+            reason = 'no_entry_instruction'
+        points[key] = None if reason else price
+        audit[key] = {'value': points[key], 'status': 'unconfirmed' if reason else 'supported_plan',
+                      'reason': reason, 'original': original, 'kind': 'conditional_ai_plan_not_market_fact'}
+    # Warning prices must be explicitly observation-only, never inferred from a conflicting sell instruction.
+    strategy = battle.get('position_strategy') or {}
+    warning = str(strategy.get('risk_control') or '')
+    for clause in re.split(r'[；;。\n]', warning):
+        if re.search(r'预警|warning', clause, re.I) and re.search(r'仅观察|不自动卖出|observation.only', clause, re.I):
+            prices = _prices(clause)
+            if prices and prices[0] > 0 and not re.search(r'-\s*\d', clause) and quality.get('status') == 'ok':
+                points['warning_price'] = prices[0]
+                audit['warning_price'] = {'value': prices[0], 'status': 'observation_only', 'reason': None, 'original': clause}
+    for role, key in (('stop_loss', 'stop_loss'), ('warning', 'warning_price'), ('target', 'take_profit')):
+        levels.setdefault(role, {}).update(price=points[key], condition=audit[key]['original'],
+                                          status=audit[key]['status'])
+
+
+def verified_data_lines(result: Any) -> list[str]:
+    """One shared disclosure for both report renderers; no model-written facts."""
+    dashboard = getattr(result, 'dashboard', None) or {}
+    verified = dashboard.get('verified_data')
+    if not isinstance(verified, dict):
+        return []
+    def text(value):
+        if value is None:
+            return 'N/A'
+        return str(value).replace('|', '\\|').replace('\n', ' ')
+    lines = ['### 可核查数据与缺失原因', '', '| 项目 | 实际数据 / 缺失原因 | 来源与时点 |', '|---|---|---|']
+    fin = verified.get('financials') or {}
+    data = fin.get('data') or {}
+    for key, label in (('report_date', '财报报告期'), ('revenue', '营业收入（元）'), ('net_profit_parent', '归母净利（元）'),
+                       ('operating_cash_flow', '经营现金流（元）'), ('roe', 'ROE（%）')):
+        reason = fin.get('missing_reason') or '字段未返回，尚未取得可核查财务数据'
+        lines.append(f"| {label} | {text(data.get(key)) if data.get(key) is not None else text(reason)} | "
+                     f"{text(fin.get('source'))}；披露 {text(data.get('published_date'))}；获取 {text(fin.get('fetched_at'))} |")
+    for key, label in (('announcements', '最新公告（公司披露）'), ('news', '新闻 / 行业动态（报道事实）')):
+        block = verified.get(key) or {}
+        records = block.get('data') or []
+        if records:
+            for record in records[:5]:
+                lines.append(f"| {label} | {text(record.get('title'))} | {text(record.get('published_date'))} "
+                             f"[{text(record.get('source'))}]({record.get('url')})；获取 {text(block.get('fetched_at'))} |")
+        else:
+            lines.append(f"| {label} | 数据不足：{text(block.get('missing_reason') or '未取得')} | "
+                         f"{text(block.get('source'))}；{text(', '.join(block.get('errors') or []))} |")
+    flow = verified.get('capital_flow') or {}
+    stock_flow = (flow.get('data') or {}).get('stock_flow') or {}
+    lines.append(f"| 资金流（供应商订单分类） | {text(stock_flow.get('main_net_inflow'))} 元；"
+                 f"{text(stock_flow.get('definition') or flow.get('missing_reason') or 'ETF不支持该统计')} | "
+                 f"{text(flow.get('source'))}；交易日 {text(stock_flow.get('trade_date'))}；获取 {text(flow.get('fetched_at'))} |")
+    for key, label in (('forecast_summary', '公司业绩预告（非分析师预测）'), ('quick_report', '业绩快报'),
+                       ('dividend', '分红记录'), ('institution', '机构观点 / 分析师预测'),
+                       ('sector_rankings', '板块资金排行'), ('chip', '筹码分布'), ('technical', '技术指标')):
+        item = (dashboard.get('data_availability') or {}).get(key) or {}
+        value = item.get('value')
+        if key == 'technical':
+            value = {'sample_count': item.get('sample_count'), 'MA60': item.get('ma60'),
+                     'indicators': value, 'missing_reason': item.get('reason')}
+        lines.append(f"| {label} | {text(json.dumps(value, ensure_ascii=False, default=str)) if value else '数据不足'} | "
+                     f"{text(item.get('reason') or item.get('status') or '未取得独立可核查数据')}；"
+                     f"{text(item.get('errors') or item.get('source_chain') or '')} |")
+    for key, label in (('stop_loss', '计划止损价'), ('warning_price', '仅观察预警价'), ('take_profit', '目标价')):
+        item = (dashboard.get('price_validation') or {}).get(key) or {}
+        label_condition = '原始模型文本（不可执行）' if item.get('status') == 'unconfirmed' else '条件计划（非行情事实）'
+        lines.append(f"| {label} | {text(item.get('value'))} | {text(item.get('reason') or item.get('status'))}；"
+                     f"{label_condition} {text(item.get('original'))} |")
+    lines.extend(['', '以上财报为历史披露事实；公告不自动等同利好或利空。分析师预测、机构观点、舆情样本和筹码仍需各自的真实数据依据。', ''])
+    return lines

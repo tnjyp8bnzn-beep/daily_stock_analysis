@@ -16,6 +16,7 @@
 
 import logging
 import random
+import re
 import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
@@ -2824,7 +2825,8 @@ class DataFetcherManager:
     @classmethod
     def _quote_needs_supplement(cls, quote) -> bool:
         """Check if any key supplementary field is still None."""
-        for f in cls._SUPPLEMENT_FIELDS:
+        fields = ['volume_ratio', 'turnover_rate', 'amplitude'] if _is_etf_code(getattr(quote, 'code', '') or '') else cls._SUPPLEMENT_FIELDS
+        for f in fields:
             if getattr(quote, f, None) is None:
                 return True
         return False
@@ -2835,13 +2837,41 @@ class DataFetcherManager:
         Copy non-None fields from *secondary* into *primary* where
         *primary* has None. Returns list of field names that were filled.
         """
+        from src.market_data_quality import finite_number
+        source = getattr(secondary, 'source', None)
+        source = getattr(source, 'value', source)
+        fetched = getattr(secondary, 'fetched_at', None)
+        timestamp = getattr(secondary, 'provider_timestamp', None)
+        primary_time = getattr(primary, 'provider_timestamp', None)
+        p, s = finite_number(getattr(primary, 'price', None)), finite_number(getattr(secondary, 'price', None))
+        cn_request = bool(re.fullmatch(r'\d{6}', str(getattr(primary, 'code', '') or '')))
+        same_day = None
+        if primary_time and timestamp and cn_request:
+            try:
+                from zoneinfo import ZoneInfo
+                first = datetime.fromisoformat(str(primary_time))
+                second = datetime.fromisoformat(str(timestamp))
+                if first.tzinfo and second.tzinfo:
+                    same_day = first.astimezone(ZoneInfo('Asia/Shanghai')).date() == second.astimezone(ZoneInfo('Asia/Shanghai')).date()
+            except ValueError:
+                pass
+        conflict = p is not None and s is not None and abs(p-s) > max(.011, abs(p)*.001)
+        setattr(primary, 'cross_validation', {'primary_price': p, 'secondary_price': s,
+                'secondary_source': source, 'provider_timestamp': timestamp, 'fetched_at': fetched,
+                'status': 'different_date' if same_day is False else 'price_conflict' if conflict else
+                          'same_day_agreement' if same_day else 'time_unconfirmed'})
+        if cn_request and (same_day is False or conflict):
+            return []
+        provenance = dict(getattr(primary, 'field_sources', None) or {})
         filled = []
         for f in cls._SUPPLEMENT_FIELDS:
             if getattr(primary, f, None) is None:
                 val = getattr(secondary, f, None)
                 if val is not None:
                     setattr(primary, f, val)
+                    provenance[f] = {'source': source, 'provider_timestamp': timestamp, 'fetched_at': fetched}
                     filled.append(f)
+        setattr(primary, 'field_sources', provenance)
         return filled
 
     def _order_us_sources_by_priority(self, source_order: List[str], *, pin_first: bool) -> List[str]:
@@ -3438,8 +3468,22 @@ class DataFetcherManager:
                     e,
                 )
                 continue
+        try:
+            from .cn_public import get_public_cn_data
+            data = get_public_cn_data().market_stats()
+            if data:
+                return data
+        except Exception as exc:
+            logger.warning("[MarketStats] public breadth fallback failed: %s", type(exc).__name__)
         logger.warning("[MarketStats] component=market_stats action=complete status=empty purpose=%s", purpose)
         return {}
+
+    def get_verified_cn_data(self, stock_code: str, stock_name: str = "") -> Dict[str, Any]:
+        """Independent free fallback; preserves every original fundamental block."""
+        if _is_non_cn_request(stock_code):
+            return {}
+        from .cn_public import get_public_cn_data
+        return get_public_cn_data().collect(stock_code, stock_name, is_etf=_is_etf_code(stock_code))
 
     def _run_with_timeout(
         self,
@@ -4327,6 +4371,7 @@ class DataFetcherManager:
         stock_code: str,
         budget_seconds: Optional[float] = None,
         *, analysis_target: Optional[AnalysisTarget] = None,
+        realtime_quote: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Aggregate fundamental blocks with fail-open semantics.
@@ -4392,7 +4437,9 @@ class DataFetcherManager:
             remaining_seconds = max(0.0, remaining_seconds - consumed_ms / 1000.0)
 
         valuation_timeout = min(fetch_timeout, remaining_seconds)
-        if valuation_timeout > 0:
+        if realtime_quote is not None:
+            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code, **({"analysis_target": analysis_target} if analysis_target is not None else {})),
                 valuation_timeout,

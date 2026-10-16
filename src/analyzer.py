@@ -386,7 +386,9 @@ def check_content_integrity(
         sp = battle.get("sniper_points")
         sp = sp if isinstance(sp, dict) else {}
         stop_loss = sp.get("stop_loss")
-        if _is_invalid_stop_loss(stop_loss):
+        stop_state = (dash.get('price_validation') or {}).get('stop_loss') or {}
+        declared_unavailable = stop_loss is None and stop_state.get('status') == 'unconfirmed' and bool(stop_state.get('reason'))
+        if _is_invalid_stop_loss(stop_loss) and not declared_unavailable:
             missing.append("dashboard.battle_plan.sniper_points.stop_loss")
     if require_phase_decision:
         phase_decision = dash.get("phase_decision")

@@ -80,6 +80,7 @@
 {% endif %}
 
 {{ market_snapshot(result) }}
+{{ verified_data_lines(result)|join('\n') }}
 
 {% if data_persp %}
 ### 📊 {{ labels.data_perspective_heading }}
