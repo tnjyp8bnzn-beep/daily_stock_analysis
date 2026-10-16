@@ -175,8 +175,10 @@ class IntradayMonitor:
                 self.notifier = NotificationService()
             result = self.notifier.send_with_results(render_alert(payload), route_type='alert', dedup_key=event_id)
             accepted = any(row.success for row in result.channel_results)
-            errors = ','.join(row.error_code or row.channel for row in result.channel_results if not row.success)
-            self.repo.finish(event_id, accepted, None if accepted else errors or 'no_channel_accepted')
+            errors = ','.join(f'{row.channel}:{row.error_code or "rejected"}'
+                              for row in result.channel_results if not row.success)
+            # Another channel accepting the alert must not hide a PushPlus rejection.
+            self.repo.finish(event_id, accepted, errors or (None if accepted else 'no_channel_accepted'))
         except Exception as exc:
             self.repo.finish(event_id, False, type(exc).__name__)
 

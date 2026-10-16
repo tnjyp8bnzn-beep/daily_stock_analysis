@@ -320,3 +320,15 @@ def test_prefixed_actual_holdings_are_monitored_without_index_collision(repo):
     assert result['checked'] == 1
     obj.manager.prefetch_realtime_quotes.assert_called_once_with(['600111'], force_refresh=True)
     assert result['signals'][0]['position']['quantity'] == 100
+
+
+def test_partial_acceptance_preserves_pushplus_failure(repo):
+    obj = worker(repo, notify=True)
+    obj.notifier.send_with_results.return_value.channel_results = [
+        SimpleNamespace(channel='pushplus', success=False, error_code='identity_required'),
+        SimpleNamespace(channel='email', success=True, error_code=None),
+    ]
+    obj.run_once()
+    event = repo.recent()[0]
+    assert event['status'] == 'accepted'
+    assert event['error'] == 'pushplus:identity_required'
