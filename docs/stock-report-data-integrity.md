@@ -44,6 +44,14 @@ MA5/10/20 分别要求完整窗口；技术分析拒绝无效收盘/负量或非
 
 止损同时检查点位及风控/清单中的命名锚点（今日最低、MA5/10/20/60）。例如“43.00，跌破今日低点止损”与真实最低 45.20 不符时，原文、所报点位、引用锚点和触发文字保存在 `stop_loss_validation`；可执行止损字段标数据缺失，最终观望并提示核查，不擅自改为 45.20。经核对一致的条件止损和独立保护性点位保留。本规则不调整真实持仓或预设风控配置。
 
+第三次运行的报告校验进一步覆盖全部股票和正文、嵌套计划与清单：
+
+- **参考支撑**仅描述技术位置；**预警价**必须明确“仅观察、不自动卖出”；**实际止损触发价**是唯一可执行的保护条件。不同角色可以有不同价格，不能同时输出互相冲突的卖出触发。`risk_levels` 追加角色元数据，不更改既有字段。
+- 原始报告完美世界为“9.45 元（跌破近期低点）”，风控另称“严格执行止损，若跌破 9.70 元短期支撑”。两者来自同一模型输出，不能推定 9.70 自动是预警价。校验保留原文和所有触发价供核查，隐藏冲突的可执行点位/指令、提示不可执行并观望；不替用户选取新的止损价。通用止损原则及与唯一点位一致的条件止损保留。
+- 行情量比、当日量/昨日量、当日量/前 5 个完整交易日均量分别处理。报告量比字段以实际行情输入为准并附来源/报价时间；缺失、非有限或无效值显示 `N/A` 和“数据不足”，不输出 `None（缩量）`，不以模型猜测补值。日间比值可以保留为独立的数值事实，不能冒充行情量比或无口径的量能结论。技术量能计算需要当日及前 5 日的完整有效量，缺失状态为“数据不足”；零均量不能默认成缩量。
+- 模型必须引用可核查字段、数值及比较口径。“洗盘”“抛压衰竭”等交易意图不能从量价单独证实；无可核查出处的确定判断改为明确的不确定性说明。成交量解读展示输入量比及来源，不用它证明交易意图；技术分析固定文案也不再断言“主力洗盘”。
+- 最终操作、正文建议、止损、仓位和嵌套清单共同校验。观望不能附带建仓或数字仓位指令；正文中的独立买卖冲突也会触发保守处理。重复校验保留原始异常证据和校验记录，不反向升级信号。新字段仅作追加，API/Web 保持既有 dashboard 合同。
+
 回滚：撤销本修复涉及文件的改动即可，无数据库迁移、配置变更或 Secrets 变更。
 
-English: quotes and daily closes retain separate provenance; unsupported facts, invalid market data and conflicting action plans fail conservatively to missing data / Watch. Efinance CN volumes are normalized from lots to shares once. Quote age remains truthful while session calendars and completeness determine validity; closing quotes can remain valid through market closures. Price/turnover/indicator and named stop-loss anchors are validated without inventing corrections. TickFlow quote batches remain capped at five; PushPlus business failures remain failures. This standalone operational note has no paired English document and introduces no configuration changes.
+English: quotes and daily closes retain separate provenance; unsupported facts, invalid market data and conflicting action plans fail conservatively to missing data / Watch. Efinance CN volumes are normalized from lots to shares once. Quote age remains truthful while session calendars and completeness determine validity; closing quotes can remain valid through market closures. Stop triggers across all narratives must agree; reference support and explicitly observation-only warnings have separate roles. Missing quote volume ratios stay unavailable; daily and previous-five-day comparisons are distinct measures. Price/volume alone cannot establish washouts or exhausted selling pressure. TickFlow quote batches remain capped at five; PushPlus business failures remain failures. This standalone operational note has no paired English document and introduces no configuration changes.

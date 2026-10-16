@@ -1105,6 +1105,7 @@ class StockAnalysisPipeline:
                 'bias_ma10': trend_result.bias_ma10,
                 'volume_status': trend_result.volume_status.value,
                 'volume_trend': trend_result.volume_trend,
+                'volume_ratio_5d': getattr(trend_result, 'volume_ratio_5d', None),
                 'buy_signal': trend_result.buy_signal.value,
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
