@@ -1803,6 +1803,27 @@ class StockAnalysisPipeline:
                     result.market_structure_context = market_structure_context
                 result.market_phase_summary = market_phase_summary
                 result.analysis_context_pack_overview = analysis_context_pack_overview
+                from src.report_consistency import apply_report_consistency
+
+                action_before_consistency = getattr(result, "action", None)
+                report_context = {
+                    **(analysis_context or {}),
+                    'realtime': initial_context.get('realtime_quote') or {},
+                    'market_phase_context': market_phase_context or {},
+                    'fundamental_context': fundamental_context,
+                }
+                result.market_snapshot = self.analyzer._build_market_snapshot(report_context)
+                apply_report_consistency(result, report_context, initial_context.get('news_context'))
+                action_after_consistency = normalize_decision_action(getattr(result, "action", None))
+                if action_chain_valid and action_after_consistency is not None:
+                    capture_pipeline_action_adjustment(
+                        pipeline_adjustments,
+                        source="report_consistency",
+                        before=action_before_consistency,
+                        after=action_after_consistency,
+                    )
+                else:
+                    action_chain_valid = False
                 final_action = normalize_decision_action(getattr(result, "action", None))
                 if isinstance(result.dashboard, dict):
                     result.dashboard.pop("agent_disagreement_explanation", None)
@@ -1830,16 +1851,6 @@ class StockAnalysisPipeline:
                     )
 
             if result:
-                from src.report_consistency import apply_report_consistency
-
-                report_context = {
-                    **(analysis_context or {}),
-                    'realtime': initial_context.get('realtime_quote') or {},
-                    'market_phase_context': market_phase_context or {},
-                    'fundamental_context': fundamental_context,
-                }
-                result.market_snapshot = self.analyzer._build_market_snapshot(report_context)
-                apply_report_consistency(result, report_context, initial_context.get('news_context'))
                 self._append_daily_data_source(
                     result,
                     analysis_context,

@@ -136,32 +136,35 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         and all(_positive(daily.get(key)) for key in ('ma5', 'ma10', 'ma20'))
         and has_reason
     )
-    advice_action = normalize_decision_action(result.operation_advice)
+    advice_action = normalize_decision_action(getattr(result, 'operation_advice', None))
     direction = _BUCKET.get(advice_action)
     conflict = advice_action is None
     explicit = normalize_decision_action(getattr(result, 'action', None))
     if explicit and _BUCKET[explicit] != direction:
         conflict = True
-    if result.decision_type in ('buy', 'sell') and result.decision_type != direction:
+    decision_type = getattr(result, 'decision_type', None)
+    if decision_type in ('buy', 'sell') and decision_type != direction:
         conflict = True
 
     # A conditional entry plan must never silently override a Watch conclusion.
     core = dashboard.get('core_conclusion') or {}
     battle = dashboard.get('battle_plan') or {}
     phase = dashboard.get('phase_decision') or {}
-    plans = [core, battle.get('position_strategy', {}) if isinstance(battle, dict) else {}, phase,
+    strategy = battle.get('position_strategy', {}) if isinstance(battle, dict) else {}
+    entry_plan = {key: strategy.get(key) for key in ('entry_plan', 'suggested_position')} if isinstance(strategy, dict) else {}
+    plans = [core, entry_plan, phase,
              result.analysis_summary, result.buy_reason, result.key_points]
 
-    def conflicting(value: Any) -> bool:
+    def conflicting(value: Any, *, entry_only: bool = False) -> bool:
         if isinstance(value, dict):
-            return any(conflicting(item) for item in value.values())
+            return any(conflicting(item, entry_only=entry_only) for item in value.values())
         if isinstance(value, list):
-            return any(conflicting(item) for item in value)
+            return any(conflicting(item, entry_only=entry_only) for item in value)
         if not isinstance(value, str) or value == missing:
             return False
         for clause in re.split(r'[，,。；;：:\n]|同时|但|而|\band\b|\bbut\b', value, flags=re.I):
             action = normalize_decision_action(clause)
-            if action and _BUCKET[action] != direction:
+            if action and (_BUCKET[action] == 'buy' if entry_only else _BUCKET[action] != direction):
                 return True
         return False
 
@@ -176,23 +179,47 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         result.buy_reason = wait
         if not result.key_points or conflicting(result.key_points):
             result.key_points = wait
-        dashboard['core_conclusion'] = {
+        core = dict(core) if isinstance(core, dict) else {}
+        core.update({
             'one_sentence': wait, 'signal_type': localize_action_label('watch', language),
             'position_advice': {'no_position': wait, 'has_position': wait},
-        }
-        dashboard['battle_plan'] = {
-            'sniper_points': {},
-            'position_strategy': {'suggested_position': wait, 'entry_plan': wait, 'risk_control': wait},
-            'action_checklist': [wait],
-        }
+        })
+        dashboard['core_conclusion'] = core
+        battle = dict(battle) if isinstance(battle, dict) else {}
+        points = battle.get('sniper_points')
+        points = dict(points) if isinstance(points, dict) else {}
+        points.pop('ideal_buy', None)
+        points.pop('secondary_buy', None)
+        stop_loss = points.get('stop_loss')
+        if (stop_loss is None or isinstance(stop_loss, (list, tuple, dict))
+                or (isinstance(stop_loss, str) and not stop_loss.strip())
+                or (isinstance(stop_loss, (int, float)) and not _positive(stop_loss))):
+            points['stop_loss'] = missing
+        strategy = dict(strategy) if isinstance(strategy, dict) else {}
+        strategy.update({'suggested_position': wait, 'entry_plan': wait})
+
+        def protective(value: str) -> bool:
+            return bool(re.search(r'止损|跌破|stop[ _-]?loss|below', value, flags=re.I))
+
+        # Preserve protective stops; only suppress aggressive entry instructions.
+        if (not strategy.get('risk_control')
+                or conflicting(strategy.get('risk_control'), entry_only=True)
+                or (conflicting(strategy.get('risk_control')) and not protective(str(strategy['risk_control'])))):
+            strategy['risk_control'] = wait
+        checklist = battle.get('action_checklist')
+        checklist = [item for item in checklist if isinstance(item, str)
+                     and not conflicting(item, entry_only=True)
+                     and (not conflicting(item) or protective(item))] if isinstance(checklist, list) else []
+        if wait not in checklist:
+            checklist.append(wait)
+        battle.update({'sniper_points': points, 'position_strategy': strategy, 'action_checklist': checklist})
+        dashboard['battle_plan'] = battle
         # Eliminate stray contradictory instructions from other narrative fields.
         for field in ('short_term_outlook', 'medium_term_outlook', 'risk_warning', 'trend_analysis',
                       'technical_analysis', 'ma_analysis', 'volume_analysis', 'pattern_analysis',
                       'fundamental_analysis', 'sector_position', 'company_highlights'):
             if conflicting(getattr(result, field, '')):
                 setattr(result, field, wait)
-        for key in ('decision_stability', 'decision_score_calibration', 'strategy_synthesis'):
-            dashboard.pop(key, None)
         phase = phase if isinstance(phase, dict) else {}
         phase['immediate_action'] = wait
         phase['watch_conditions'] = [wait]
@@ -200,7 +227,13 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
 
         def align(value: Any) -> Any:
             if isinstance(value, dict):
-                return {key: align(item) for key, item in value.items()}
+                return {
+                    key: item if key in {
+                        'decision_stability', 'decision_score_calibration',
+                        'stop_loss', 'take_profit', 'risk_control', 'action_checklist',
+                    } else align(item)
+                    for key, item in value.items()
+                }
             if isinstance(value, list):
                 return [align(item) for item in value]
             return wait if conflicting(value) else value
@@ -222,7 +255,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
             if isinstance(points, dict):
                 points.pop('ideal_buy', None)
                 points.pop('secondary_buy', None)
-    if advice_action != action_for_score(result.sentiment_score):
+    if advice_action != action_for_score(getattr(result, 'sentiment_score', None)):
         calibration = dashboard.get('decision_score_calibration')
         if not isinstance(calibration, dict):
             calibration = dashboard['decision_score_calibration'] = {}
@@ -231,6 +264,10 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
     result.decision_type = _BUCKET.get(advice_action, 'hold')
     dashboard['action'] = result.action
     dashboard['operation_advice'] = result.operation_advice
+    dashboard['decision_type'] = result.decision_type
+    dashboard['sentiment_score'] = getattr(result, 'sentiment_score', None)
+    dashboard['confidence_level'] = getattr(result, 'confidence_level', None)
+    dashboard['analysis_summary'] = result.analysis_summary
     missing_dimensions = [key for key in ('capital_flow', 'institutional_views') if intel[key] == missing]
     if missing_dimensions:
         dimension_labels = {

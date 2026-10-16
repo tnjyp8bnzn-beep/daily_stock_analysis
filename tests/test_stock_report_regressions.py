@@ -145,7 +145,9 @@ def test_watch_conclusion_removes_entry_position_and_sniper_instructions():
     assert result.operation_advice == '观望'
     assert result.action == 'watch' and result.decision_type == 'hold'
     assert '建仓' not in str(result.dashboard['battle_plan'])
-    assert result.dashboard['battle_plan']['sniper_points'] == {}
+    points = result.dashboard['battle_plan']['sniper_points']
+    assert 'ideal_buy' not in points and 'secondary_buy' not in points
+    assert '数据缺失' in points['stop_loss']
     assert '观望' in result.dashboard['core_conclusion']['one_sentence']
 
 
@@ -287,3 +289,59 @@ def test_market_review_prose_cannot_bypass_stock_evidence_rules():
     for unsupported in ('传言公司将并购', '资金持续流入', '机构一致上调评级'):
         assert unsupported not in cleaned
     assert '数据缺失' in cleaned
+
+
+def test_watch_preserves_protective_stop_and_dashboard_metadata():
+    result = _result()
+    result.dashboard['core_conclusion']['time_sensitivity'] = '当日有效'
+    result.dashboard['intelligence'] = {'risk_alerts': []}
+    result.dashboard['battle_plan'] = {
+        'sniper_points': {'ideal_buy': 105, 'secondary_buy': 103, 'stop_loss': 95},
+        'position_strategy': {'entry_plan': '分批买入', 'risk_control': '跌破95止损卖出'},
+        'action_checklist': ['跌破95止损卖出', '放量买入'],
+        'risk_budget': '1%',
+    }
+    apply_report_consistency(result, {})
+    assert result.action == 'watch' and result.decision_type == 'hold'
+    assert result.dashboard['decision_type'] == result.decision_type
+    assert result.dashboard['sentiment_score'] == result.sentiment_score
+    assert result.dashboard['core_conclusion']['time_sensitivity'] == '当日有效'
+    battle = result.dashboard['battle_plan']
+    assert battle['sniper_points'] == {'stop_loss': 95}
+    assert battle['position_strategy']['risk_control'] == '跌破95止损卖出'
+    assert '跌破95止损卖出' in battle['action_checklist']
+    assert '放量买入' not in battle['action_checklist']
+    assert battle['risk_budget'] == '1%'
+    from src.analyzer import check_content_integrity
+    assert check_content_integrity(result) == (True, [])
+
+
+def test_sparse_legacy_result_without_decision_type_fails_closed_without_crashing():
+    result = SimpleNamespace(success=True, sentiment_score=90, operation_advice='持有', analysis_summary='技术待确认')
+    apply_report_consistency(result, {})
+    assert result.action == 'watch' and result.decision_type == 'hold'
+    assert result.dashboard['decision_type'] == 'hold'
+    assert '数据缺失' in result.dashboard['battle_plan']['sniper_points']['stop_loss']
+
+
+@pytest.mark.parametrize('has_history', [True, False])
+def test_history_prefetch_uses_real_tuple_contract_and_preserves_empty_fallback(has_history, caplog):
+    from datetime import date
+    import pandas as pd
+    from src.core.pipeline import StockAnalysisPipeline
+
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.db = Mock()
+    pipeline.db.get_data_range.return_value = []
+    pipeline.fetcher_manager = Mock()
+    frame = pd.DataFrame([{'date': '2026-10-15', 'close': 100}]) if has_history else pd.DataFrame()
+    pipeline.fetcher_manager.get_daily_data.return_value = (frame, 'test-history')
+    pipeline._resolve_resume_target_date = Mock(return_value=date(2026, 10, 15))
+    with patch('src.services.history_loader.get_frozen_target_date', return_value=None):
+        pipeline._ensure_agent_history('600519')
+    pipeline.fetcher_manager.get_daily_data.assert_called_once_with('600519', days=240)
+    if has_history:
+        pipeline.db.save_daily_data.assert_called_once_with(frame, '600519', 'test-history')
+    else:
+        pipeline.db.save_daily_data.assert_not_called()
+    assert 'not enough values to unpack' not in caplog.text
