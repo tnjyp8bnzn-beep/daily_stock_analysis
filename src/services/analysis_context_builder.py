@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
+from src.market_data_quality import validate_bar, validate_technical
 
 from src.schemas.analysis_context_pack import (
     AnalysisContextBlock,
@@ -155,6 +156,12 @@ def _build_quote_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextB
         if fallback_from is None:
             warnings.append(_REALTIME_FALLBACK_WARNING)
 
+    validation = validate_bar(quote, quote=True)
+    warnings.extend(validation['issues'])
+    warnings.extend(f"quote_missing_{key}" for key in validation['missing_fields'])
+    if status == ContextFieldStatus.AVAILABLE and validation['status'] != 'ok':
+        status = ContextFieldStatus.PARTIAL
+
     items = {
         key: AnalysisContextItem(
             status=status,
@@ -232,10 +239,19 @@ def _build_daily_bars_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisCon
         block_status = ContextFieldStatus.PARTIAL
     else:
         block_status = ContextFieldStatus.MISSING
+    validation = validate_bar(context.get('today') or {},
+                              pre_close=(context.get('yesterday') or {}).get('close'))
+    warnings = validation['issues'] + [f"daily_missing_{key}" for key in validation['missing_fields']]
+    if block_status == ContextFieldStatus.AVAILABLE and validation['status'] != 'ok':
+        block_status = ContextFieldStatus.PARTIAL
+    if validation['status'] != 'ok' and items['today'].status == ContextFieldStatus.AVAILABLE:
+        items['today'].status = ContextFieldStatus.PARTIAL
+        items['today'].warnings.extend(warnings)
     return AnalysisContextBlock(
         status=block_status,
         items=items,
         source="storage.get_analysis_context",
+        warnings=warnings,
         metadata=metadata,
     )
 
@@ -270,9 +286,15 @@ def _build_technical_block(
         if has_realtime_overlay
         else ContextFieldStatus.AVAILABLE
     )
+    validation = validate_technical(trend)
+    warnings.extend(validation['issues'])
+    warnings.extend(f"technical_missing_{key}" for key in validation['missing_fields'])
+    if validation['status'] != 'ok':
+        block_status = ContextFieldStatus.PARTIAL
     items: Dict[str, AnalysisContextItem] = {
         "trend_result": AnalysisContextItem(
-            status=ContextFieldStatus.AVAILABLE,
+            status=(ContextFieldStatus.AVAILABLE if validation['status'] == 'ok'
+                    else ContextFieldStatus.PARTIAL),
             value=trend,
             warnings=list(warnings),
         )
@@ -655,10 +677,8 @@ def _has_explicit_quote_stale_marker(
     for key in ("price_stale", "quote_stale", "is_stale"):
         if bool(metadata.get(key)) or bool(quote.get(key)):
             return True
-    if bool(metadata.get("quote_stale_seconds")) or bool(
-        quote.get("quote_stale_seconds")
-    ):
-        return True
+    # A recorded age (including the legacy alias) is not a validity verdict.
+    # DataFetcherManager evaluates session/date/completeness and sets is_stale.
     return False
 
 
@@ -673,6 +693,8 @@ def _quote_metadata(
         "quote_stale_seconds",
         "is_stale",
         "stale_seconds",
+        "freshness_status",
+        "validation_issues",
         "fetched_at",
         "provider_timestamp",
         "fallback_from",

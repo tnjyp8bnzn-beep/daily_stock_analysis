@@ -565,7 +565,9 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
             "code": "600519",
             "stock_name": "贵州茅台",
             "date": "2026-06-02",
-            "today": {"date": "2026-06-02", "close": 6.67, "volume": 1000.0},
+            "today": {"date": "2026-06-02", "close": 6.67, "volume": 1000.0,
+                      "open": 6.75, "high": 6.80, "low": 6.60,
+                      "amount": 6670.0, "pct_chg": -1.62},
             "yesterday": {"date": "2026-06-01", "close": 6.78, "volume": 900.0},
         }
 

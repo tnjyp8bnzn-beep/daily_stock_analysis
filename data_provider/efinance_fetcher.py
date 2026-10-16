@@ -597,19 +597,11 @@ class EfinanceFetcher(BaseFetcher):
         # 重命名列
         df = df.rename(columns=column_mapping)
         
-        # Fallback: if OHLC columns are missing (e.g. very old data path), fill from close
-        if 'close' in df.columns and 'open' not in df.columns:
-            df['open'] = df['close']
-            df['high'] = df['close']
-            df['low'] = df['close']
-            
-        # Fill volume and amount if missing
-        if 'volume' not in df.columns:
-            df['volume'] = 0
-        if 'amount' not in df.columns:
-            df['amount'] = 0
+        # CN Eastmoney history/spot volume is lots; canonical OHLCV uses shares.
+        # Missing OHLC/turnover stays missing, rather than fabricating flat bars/0.
+        if 'volume' in df.columns:
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce') * 100
 
-        
         # 如果没有 code 列，手动添加
         if 'code' not in df.columns:
             df['code'] = stock_code
@@ -713,14 +705,21 @@ class EfinanceFetcher(BaseFetcher):
             total_mv_col = '总市值' if '总市值' in df.columns else 'total_mv'
             circ_mv_col = '流通市值' if '流通市值' in df.columns else 'circ_mv'
             
+            price = safe_float(row.get(price_col))
+            change_amount = safe_float(row.get(chg_col))
+            pre_close = safe_float(row.get('昨收'))
+            if pre_close is None and price is not None and change_amount is not None:
+                pre_close = price - change_amount
+
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=str(row.get(name_col, '')),
                 source=RealtimeSource.EFINANCE,
-                price=safe_float(row.get(price_col)),
+                price=price,
+                pre_close=pre_close,
                 change_pct=safe_float(row.get(pct_col)),
-                change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
+                change_amount=change_amount,
+                volume=(safe_int(row.get(vol_col)) * 100 if safe_int(row.get(vol_col)) is not None else None),
                 amount=safe_float(row.get(amt_col)),
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),
@@ -804,7 +803,7 @@ class EfinanceFetcher(BaseFetcher):
                 price=price,
                 change_pct=safe_float(data.get("f170")),
                 change_amount=safe_float(data.get("f169")),
-                volume=safe_int(data.get("f47")),
+                volume=(safe_int(data.get("f47")) * 100 if safe_int(data.get("f47")) is not None else None),
                 amount=safe_float(data.get("f48")),
                 amplitude=safe_float(data.get("f171")),
                 high=safe_float(data.get("f44")),
@@ -895,14 +894,21 @@ class EfinanceFetcher(BaseFetcher):
             low_col = '最低' if '最低' in df.columns else 'low'
             open_col = '开盘' if '开盘' in df.columns else 'open'
 
+            price = safe_float(row.get(price_col))
+            change_amount = safe_float(row.get(chg_col))
+            pre_close = safe_float(row.get('昨收'))
+            if pre_close is None and price is not None and change_amount is not None:
+                pre_close = price - change_amount
+
             quote = UnifiedRealtimeQuote(
                 code=target_code,
                 name=str(row.get(name_col, '')),
                 source=RealtimeSource.EFINANCE,
-                price=safe_float(row.get(price_col)),
+                price=price,
+                pre_close=pre_close,
                 change_pct=safe_float(row.get(pct_col)),
-                change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
+                change_amount=change_amount,
+                volume=(safe_int(row.get(vol_col)) * 100 if safe_int(row.get(vol_col)) is not None else None),
                 amount=safe_float(row.get(amt_col)),
                 turnover_rate=safe_float(row.get(turn_col)),
                 amplitude=safe_float(row.get(amp_col)),

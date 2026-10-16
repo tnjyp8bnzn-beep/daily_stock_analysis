@@ -565,8 +565,12 @@ class BaseFetcher(ABC):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # 去除关键列为空的行
-        df = df.dropna(subset=['close', 'volume'])
+        # Price-only consumers (ETF rotation) may use closes without turnover.
+        # Keep missing volume/amount unknown; technical/report validation handles them.
+        for column in ('volume', 'amount'):
+            if column not in df.columns:
+                df[column] = np.nan
+        df = df.dropna(subset=['close'])
         
         # 按日期升序排序
         df = df.sort_values('date', ascending=True).reset_index(drop=True)
@@ -584,9 +588,9 @@ class BaseFetcher(ABC):
         df = df.copy()
         
         # 移动平均线
-        df['ma5'] = df['close'].rolling(window=5, min_periods=1).mean()
-        df['ma10'] = df['close'].rolling(window=10, min_periods=1).mean()
-        df['ma20'] = df['close'].rolling(window=20, min_periods=1).mean()
+        df['ma5'] = df['close'].rolling(window=5, min_periods=5).mean()
+        df['ma10'] = df['close'].rolling(window=10, min_periods=10).mean()
+        df['ma20'] = df['close'].rolling(window=20, min_periods=20).mean()
         
         # 量比：当日成交量 / 5日平均成交量
         # 注意：此处的 volume_ratio 是“日线成交量 / 前5日均量(shift 1)”的相对倍数，
@@ -594,7 +598,7 @@ class BaseFetcher(ABC):
         # 该行为目前保留（按需求不改逻辑）。
         avg_volume_5 = df['volume'].rolling(window=5, min_periods=1).mean()
         df['volume_ratio'] = df['volume'] / avg_volume_5.shift(1)
-        df['volume_ratio'] = df['volume_ratio'].fillna(1.0)
+        df['volume_ratio'] = df['volume_ratio'].fillna(1.0).where(df['volume'].notna())
         
         # 保留2位小数
         for col in ['ma5', 'ma10', 'ma20', 'volume_ratio']:
@@ -2408,6 +2412,19 @@ class DataFetcherManager:
         if quote is None:
             return None
 
+        from src.market_data_quality import validate_bar
+        from src.quote_provenance import quote_freshness
+
+        quote_data = {key: getattr(quote, key, None) for key in (
+            'code', 'market', 'price', 'open_price', 'high', 'low', 'pre_close',
+            'change_pct', 'volume', 'amount',
+        )}
+        validation = validate_bar(quote_data, quote=True)
+        setattr(quote, 'validation_issues', validation['issues'])
+        setattr(quote, 'missing_fields', validation['missing_fields'])
+        setattr(quote, 'data_quality', 'ok' if validation['status'] == 'ok' else 'partial')
+        setattr(quote, 'freshness_status', 'unknown')
+
         # A fetcher cache hit must retain the actual acquisition time.
         fetched_at = getattr(quote, "fetched_at", None) or self._utc_now_iso()
         setattr(quote, "fetched_at", fetched_at)
@@ -2437,7 +2454,9 @@ class DataFetcherManager:
         stale_seconds = int(delta)
         ttl = realtime_cache_ttl if realtime_cache_ttl is not None else 600
         setattr(quote, "stale_seconds", stale_seconds)
-        setattr(quote, "is_stale", stale_seconds > int(ttl))
+        is_stale, status = quote_freshness(quote_data, provider_dt, fetched_dt, int(ttl))
+        setattr(quote, "is_stale", is_stale)
+        setattr(quote, "freshness_status", status)
         return quote
     
     def get_realtime_quote(self, stock_code: str, *, log_final_failure: bool = True,
