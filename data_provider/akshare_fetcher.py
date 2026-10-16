@@ -31,6 +31,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, List, Tuple
 
 import pandas as pd
@@ -175,6 +176,16 @@ def _normalize_tencent_volume(fields: List[str]) -> Optional[int]:
     if raw_volume is None:
         return None
 
+    # Prefer same-bar turnover/range evidence over a rounded float-cap estimate.
+    amount = _parse_tencent_amount(fields)
+    low = safe_float(fields[34]) if len(fields) > 34 else None
+    high = safe_float(fields[33]) if len(fields) > 33 else None
+    if amount and raw_volume > 0 and low and high and 0 < low <= high:
+        candidates = [candidate for candidate in (raw_volume, raw_volume * 100)
+                      if low * .98 <= amount / candidate <= high * 1.02]
+        if len(candidates) == 1:
+            return candidates[0]
+
     price = safe_float(fields[3]) if len(fields) > 3 else None
     turnover_rate = safe_float(fields[38]) if len(fields) > 38 else None
     circ_mv_yi = safe_float(fields[44]) if len(fields) > 44 and fields[44] else None
@@ -189,6 +200,15 @@ def _normalize_tencent_volume(fields: List[str]) -> Optional[int]:
             return raw_volume if raw_delta <= hand_delta else hand_to_share_volume
 
     return raw_volume * 100
+
+
+def _tencent_quote_time(fields: List[str]) -> Optional[str]:
+    try:
+        return datetime.strptime(fields[30], '%Y%m%d%H%M%S').replace(
+            tzinfo=ZoneInfo('Asia/Shanghai')
+        ).isoformat()
+    except (IndexError, ValueError, TypeError):
+        return None
 
 
 def _parse_tencent_amount(fields: List[str]) -> Optional[float]:
@@ -1477,6 +1497,7 @@ class AkshareFetcher(BaseFetcher):
                 code=stock_code,
                 name=fields[1] if len(fields) > 1 else "",
                 source=RealtimeSource.TENCENT,
+                provider_timestamp=_tencent_quote_time(fields),
                 price=safe_float(fields[3]),
                 change_pct=safe_float(fields[32]),
                 change_amount=safe_float(fields[31]) if len(fields) > 31 else None,

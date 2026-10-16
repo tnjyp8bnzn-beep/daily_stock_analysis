@@ -4470,6 +4470,14 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 | 均线形态 | {context.get('ma_status', unknown_text)} | 多头/空头/缠绕 |
 """
         
+        from src.market_data_quality import context_quality
+        validation = context_quality(context)
+        if validation['status'] != 'ok':
+            heading = 'Data validation: incomplete or invalid' if english else '数据校验：异常或缺失'
+            instruction = ('Do not base executable trades on invalid/missing fields.' if english
+                           else '异常或缺失字段不可作为可执行买卖依据；不得猜测修复值。')
+            prompt += f"\n\n### {heading}\n{json.dumps(validation, ensure_ascii=False)}\n{instruction}\n"
+
         # 添加实时行情数据（量比、换手率等）
         if 'realtime' in context and english:
             rt = context['realtime']
@@ -5122,7 +5130,9 @@ Output the complete Decision Dashboard in JSON format."""
     
     def _format_volume(self, volume: Optional[float], report_language: str = "zh") -> str:
         """格式化成交量显示"""
-        if volume is None:
+        from src.market_data_quality import finite_number
+        volume = finite_number(volume)
+        if volume is None or volume < 0:
             return 'N/A'
         if normalize_report_language(report_language) in ("en", "ko"):
             return f"{self._format_scaled_number_en(volume)} shares"
@@ -5135,7 +5145,9 @@ Output the complete Decision Dashboard in JSON format."""
     
     def _format_amount(self, amount: Optional[float], report_language: str = "zh") -> str:
         """格式化成交额显示"""
-        if amount is None:
+        from src.market_data_quality import finite_number
+        amount = finite_number(amount)
+        if amount is None or amount < 0:
             return 'N/A'
         if normalize_report_language(report_language) in ("en", "ko"):
             return self._format_scaled_number_en(amount)
@@ -5158,22 +5170,14 @@ Output the complete Decision Dashboard in JSON format."""
         return f"{value:.0f}"
 
     def _format_percent(self, value: Optional[float]) -> str:
-        """格式化百分比显示"""
-        if value is None:
-            return 'N/A'
-        try:
-            return f"{float(value):.2f}%"
-        except (TypeError, ValueError):
-            return 'N/A'
+        from src.market_data_quality import finite_number
+        number = finite_number(value)
+        return f'{number:.2f}%' if number is not None else 'N/A'
 
     def _format_price(self, value: Optional[float]) -> str:
-        """格式化价格显示"""
-        if value is None:
-            return 'N/A'
-        try:
-            return f"{float(value):.2f}"
-        except (TypeError, ValueError):
-            return 'N/A'
+        from src.market_data_quality import finite_number
+        number = finite_number(value)
+        return f'{number:.2f}' if number is not None else 'N/A'
 
     def _build_market_snapshot(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """构建当日行情快照（展示用）"""
@@ -5223,7 +5227,10 @@ Output the complete Decision Dashboard in JSON format."""
 
         from src.quote_provenance import quote_metadata
 
+        from src.market_data_quality import context_quality
+
         snapshot.update(quote_metadata(context))
+        snapshot['market_data_validation'] = context_quality(context)
         return snapshot
 
     def _check_content_integrity(

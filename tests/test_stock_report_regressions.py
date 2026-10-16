@@ -77,10 +77,14 @@ def test_unconfirmed_timezone_is_never_invented(timestamp):
 
 def _context():
     return {
-        'code': '600519', 'date': '2026-10-16',
-        'today': {'date': '2026-10-16', 'close': 105, 'ma5': 101, 'ma10': 99, 'ma20': 98},
-        'daily_snapshot': {'date': '2026-10-15', 'close': 100, 'data_source': 'daily-provider'},
-        'realtime': {'price': 105, 'source': 'tickflow',
+        'code': '600519', 'date': '2026-10-16', 'yesterday': {'close': 100},
+        'today': {'date': '2026-10-16', 'close': 105, 'open': 105, 'high': 106, 'low': 104,
+                  'volume': 1000000, 'amount': 105000000, 'pct_chg': 5, 'ma5': 101, 'ma10': 99, 'ma20': 98},
+        'daily_snapshot': {'date': '2026-10-15', 'close': 100, 'open': 100,
+                           'high': 101, 'low': 99, 'volume': 1000000, 'amount': 100000000,
+                           'pct_chg': 0, 'data_source': 'daily-provider'},
+        'realtime': {'price': 105, 'open_price': 105, 'high': 106, 'low': 104,
+                     'volume': 1000000, 'amount': 105000000, 'change_pct': 5, 'source': 'tickflow',
                      'provider_timestamp': '2026-10-16T10:00:00+08:00',
                      'fetched_at': '2026-10-16T02:00:07+00:00'},
         'market_phase_context': {'phase': 'intraday', 'session_date': '2026-10-16', 'is_partial_bar': True},

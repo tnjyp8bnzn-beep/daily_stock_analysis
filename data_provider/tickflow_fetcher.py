@@ -239,7 +239,7 @@ class TickFlowFetcher(BaseFetcher):
             return None
         try:
             numeric = float(value)
-            if math.isnan(numeric):
+            if not math.isfinite(numeric):
                 return None
             return numeric
         except (TypeError, ValueError):
@@ -833,8 +833,8 @@ class TickFlowFetcher(BaseFetcher):
         open_price = self._safe_float(quote.get("open"))
         high = self._safe_float(quote.get("high"))
         low = self._safe_float(quote.get("low"))
-        volume = self._cn_lots_to_shares(quote.get("volume"), default=0)
-        amount = self._safe_float(quote.get("amount")) or 0.0
+        volume = self._cn_lots_to_shares(quote.get("volume"))
+        amount = self._safe_float(quote.get("amount"))
         change_amount = self._safe_float(ext.get("change_amount"))
         if change_amount is None and prev_close is not None:
             change_amount = current - prev_close

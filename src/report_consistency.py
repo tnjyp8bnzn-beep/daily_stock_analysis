@@ -10,6 +10,7 @@ from typing import Any
 from src.report_language import localize_confidence_level, normalize_report_language
 from src.schemas.decision_action import localize_action_label, normalize_decision_action
 from src.schemas.decision_scale import action_for_score
+from src.market_data_quality import context_quality, finite_number
 
 
 _FACT_MARKERS = re.compile(
@@ -55,6 +56,55 @@ def _positive(value: Any) -> bool:
         return math.isfinite(float(value)) and float(value) > 0
     except (ValueError, TypeError):
         return False
+
+
+def _validate_stop_anchor(dashboard: dict, context: dict) -> bool:
+    """Invalidate a contradictory executable stop; retain original audit evidence."""
+    battle = dashboard.get('battle_plan') or {}
+    points = (battle.get('sniper_points') or {}) if isinstance(battle, dict) else {}
+    if not isinstance(points, dict):
+        return False
+    original = points.get('stop_loss')
+    previous = dashboard.get('stop_loss_validation') or {}
+    if isinstance(previous, dict) and previous.get('status') == 'invalid':
+        return True
+    if not isinstance(original, (str, int, float)):
+        return False
+    text = str(original)
+    numeric_literal = re.fullmatch(r'[-+]?(?:nan|inf(?:inity)?|\d+(?:\.\d+)?)(?:元)?', text.strip(), re.I)
+    numeric_value = finite_number(text.strip().removesuffix('元'))
+    invalid_level = isinstance(original, bool) or (
+        bool(numeric_literal) and (numeric_value is None or numeric_value <= 0)
+    )
+    strategy = battle.get('position_strategy') or {}
+    references = [strategy.get('risk_control')] if isinstance(strategy, dict) else []
+    checklist = battle.get('action_checklist')
+    if isinstance(checklist, list):
+        references.extend(checklist)
+    references = [item for item in references if isinstance(item, str)
+                  and re.search(r'止损|跌破|stop.?loss|break below', item, re.I)]
+    anchor_text = '\n'.join([text, *references])
+    today = context.get('today') or context.get('daily_snapshot') or {}
+    anchors = {}
+    if re.search(r'(?:今日|当日|今天|本日).{0,3}(?:最低价?|低点)|today.{0,12}low', anchor_text, re.I):
+        anchors['low'] = finite_number(today.get('low'))
+    for period in re.findall(r'(?<![A-Za-z0-9])MA(5|10|20|60)(?!\d)', anchor_text, re.I):
+        anchors[f'ma{period}'] = finite_number(today.get(f'ma{period}'))
+    if not anchors and not invalid_level:
+        return False
+    numbers = re.findall(r'(?<![A-Za-z\d])[-+]?\d+(?:\.\d+)?', text)
+    level = finite_number(numbers[0]) if numbers else None
+    invalid = invalid_level or any(
+        value is None or value <= 0 or (level is not None and abs(level - value) > .011)
+        for value in anchors.values())
+    if invalid:
+        dashboard['stop_loss_validation'] = {
+            'status': 'invalid', 'reason': ('stop_loss_anchor_mismatch_or_missing' if anchors else 'stop_loss_value_invalid'),
+            'original_value': text if finite_number(original) is None else original,
+            'claimed_level': level, 'anchors': anchors,
+            'trigger_text': references,
+        }
+    return invalid
 
 
 def apply_report_consistency(result: Any, context: dict, news_context: str | None = None) -> list[str]:
@@ -126,6 +176,13 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
 
     daily = context.get('today') or {}
     realtime = context.get('realtime') or context.get('realtime_quote') or {}
+    quality = context_quality(context)
+    dashboard['market_data_validation'] = quality
+    stop_invalid = _validate_stop_anchor(dashboard, context)
+    if stop_invalid:
+        adjustments.append('stop_loss_anchor_conflict')
+    if quality['status'] != 'ok':
+        adjustments.append('market_data_incomplete_or_invalid')
     reason = str(getattr(result, 'buy_reason', '') or '').strip()
     has_reason = bool(reason and reason.lower() not in {'n/a', 'none', 'null', '-', '--', '无', '未知'}
                       and not re.search(r'数据缺失|数据不足|无法判断|待补充|暂无|insufficient|unavailable|no data|unknown',
@@ -134,6 +191,8 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         not context.get('data_missing') and getattr(result, 'success', True)
         and (_positive(realtime.get('price')) or _positive(daily.get('close')))
         and all(_positive(daily.get(key)) for key in ('ma5', 'ma10', 'ma20'))
+        and quality['status'] == 'ok' and not stop_invalid
+        and realtime.get('is_stale') is not True
         and has_reason
     )
     advice_action = normalize_decision_action(getattr(result, 'operation_advice', None))
@@ -191,7 +250,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
         points.pop('ideal_buy', None)
         points.pop('secondary_buy', None)
         stop_loss = points.get('stop_loss')
-        if (stop_loss is None or isinstance(stop_loss, (list, tuple, dict))
+        if (stop_invalid or stop_loss is None or isinstance(stop_loss, (list, tuple, dict))
                 or (isinstance(stop_loss, str) and not stop_loss.strip())
                 or (isinstance(stop_loss, (int, float)) and not _positive(stop_loss))):
             points['stop_loss'] = missing
@@ -230,6 +289,7 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
                 return {
                     key: item if key in {
                         'decision_stability', 'decision_score_calibration',
+                        'market_data_validation', 'stop_loss_validation',
                         'stop_loss', 'take_profit', 'risk_control', 'action_checklist',
                     } else align(item)
                     for key, item in value.items()
@@ -268,6 +328,37 @@ def apply_report_consistency(result: Any, context: dict, news_context: str | Non
     dashboard['sentiment_score'] = getattr(result, 'sentiment_score', None)
     dashboard['confidence_level'] = getattr(result, 'confidence_level', None)
     dashboard['analysis_summary'] = result.analysis_summary
+    if stop_invalid:
+        stop_warning = {
+            'zh': '数据不一致：止损价与触发条件引用的价格不符或依据缺失；原始值已保留供核查，核实前不可执行。',
+            'en': 'Data conflict: stop-loss and its price anchor disagree or lack evidence; original retained for review, do not execute.',
+            'ko': '데이터 불일치: 손절가와 기준 가격이 다르거나 근거가 없습니다. 원문을 보존했으며 확인 전 실행하지 마세요.',
+        }[language]
+        # Suppress dependent executable triggers as well as the point itself.
+        # Keep generic protective principles and preserve originals in validation.
+        validation = dashboard['stop_loss_validation']
+        claimed = validation.get('claimed_level')
+
+        def invalid_trigger(value: Any) -> bool:
+            if not isinstance(value, str) or not re.search(r'止损|跌破|stop.?loss|break below', value, re.I):
+                return False
+            named = re.search(r'(?:今日|当日|今天).{0,3}(?:最低价?|低点)|today.{0,12}low|MA(?:5|10|20|60)(?!\d)', value, re.I)
+            numbers = [finite_number(number) for number in re.findall(r'\d+(?:\.\d+)?', value)]
+            return bool(named or (claimed is not None and any(
+                number is not None and abs(number - claimed) <= .011 for number in numbers)))
+
+        battle = dashboard.get('battle_plan') or {}
+        strategy = battle.get('position_strategy') or {}
+        if isinstance(strategy, dict) and invalid_trigger(strategy.get('risk_control')):
+            strategy['risk_control'] = stop_warning
+        checklist = battle.get('action_checklist')
+        if isinstance(checklist, list):
+            battle['action_checklist'] = [stop_warning if invalid_trigger(item) else item for item in checklist]
+        for field in ('risk_warning', 'short_term_outlook', 'medium_term_outlook'):
+            if invalid_trigger(getattr(result, field, None)):
+                setattr(result, field, stop_warning)
+        if stop_warning not in str(getattr(result, 'risk_warning', '') or ''):
+            result.risk_warning = f'{getattr(result, "risk_warning", "") or ""}\n{stop_warning}'.strip()
     missing_dimensions = [key for key in ('capital_flow', 'institutional_views') if intel[key] == missing]
     if missing_dimensions:
         dimension_labels = {

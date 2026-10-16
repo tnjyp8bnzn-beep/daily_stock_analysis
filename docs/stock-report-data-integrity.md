@@ -16,6 +16,33 @@
 
 变更不会重写已经生成的报告。合入后应由有权限的维护者检查下一次 Actions 的逐股结果和通知日志；不应为了验证而新增收费 API 或公开 Secrets。
 
+## 成交量、时段和风控数据契约
+
+国内证券标准数据统一为成交量 **股**、成交额 **元**、涨跌幅 **百分数**（0.40 表示 0.40%）。仅在数据源适配入口转换；数据库、实时叠加、量能比较和报告不再重复换算。报告将股数展示为股/万股/亿股，将金额展示为元/万元/亿元。
+
+| 路径 | 原始单位及处理 |
+|---|---|
+| Efinance A 股/ETF 日线、股票/ETF 实时及东财指数实时 | 成交量手 → ×100 股；成交额元保持不变。缺失 OHLC/量额不填成平价/0。 |
+| TickFlow 当前支持的国内日线/实时适配 | 保留现有手 → 股、元不变、比例涨幅 → 百分数契约。第二次运行实时量额与此契约吻合；公开 API/SDK 字段说明未承诺所有市场统一单位，不能推广到其他市场或再乘一次 100。缺少量额仍为缺失。 |
+| 腾讯实时 | 同一份 payload 的成交额÷候选股数与日内高低价优先交叉验证；兼容返回手或股，保留原有流通市值/换手率证据及传统兜底。35 字段金额为元；缺失时 37 字段万元 ×10000。14 位供应商时间按上海时区解析，未知不编造。 |
+| 腾讯国内日线 | 保留既有规则：普通股票手 → 股，科创板 688/689 原值为股；缺少金额不按收盘价虚构。 |
+
+真实运行反例（2026-10-16，亨通光电）：Efinance 原始成交量 1,023,074 手、成交额约 4,717,003,000 元，换算为 102,307,400 股。成交均价约 46.11 元，处于日内 45.20–47.00 元之间。旧展示“102.31 万股 / 47.17 亿元”隐含每股约 4610.62 元。昨日 1,121,314 手也必须转股，实时量与昨日量的比值约 0.91，不是 91 倍。此错误来自源单位漏转，不能通过改报告标签、改量比阈值或调整金额掩盖。
+
+日线保存原有 upsert 会刷新重新获取日期的量额，无需数据库迁移；此次修复不直接改现有数据库或持仓。已保存的错误历史在对应日期重新抓取前不会自动修正，也不会靠价格比值猜单位。如已有当日日线，普通断点续传会跳过抓取，应通过现有分析 API 的 `force_refresh: true` 刷新所需窗口；没有缓存的 Actions 运行则正常抓取。未刷新的量价异常会明确披露并限制操作。
+
+报价的 `stale_seconds` 始终保留报价至获取的真实秒差。有效性另按交易所日历判断：
+
+- 当天 15:00 的完整 A 股报价在 15:12 获取，属于 `session_close`，不因超过 600 秒 TTL 判过期；756 秒仍照实记录，不改为 0。
+- 必须是最近有效交易日的收盘时点（允许供应商一分钟内的时标差），且 OHLC、涨幅和量额字段完整、无量价矛盾，才能在盘后、周末、节假日或下一交易日盘前延续有效。下一交易日开盘后、错误交易日、陈旧盘中报价不能套用此豁免。午休仅认可该次午间收市时点的完整报价。
+- 复用交易日历的实际收市时间，支持美国半日交易等边界。日历不可用不认证有效收盘；时间缺失/无时区/未来时标则明确未知。字段不完整的收盘报价为 `incomplete_close`，不认证为 fresh，也不混同为已确认价格过期。最新供应商报价仍不冒充交易所认证的最终日线。
+
+数据检查统一用于行情元数据、模型上下文和最终报告：有限且合法的价格/量额、OHLC 区间、成交额÷股数与同一根 K 线高低价（保留 2% 上游舍入容差）、涨幅与昨收（允许价格分位舍入）、MA/RSI/MACD 的值域与样本情况。量价检查针对当前分析日线，不把早期复权价格与未复权成交额强行比较。只标异常，不自动把可疑数字乘/除 100。缺少昨收时标记 partial，不声称已完成涨幅关系核验；Efinance 只有实际涨跌额/最新价存在时才可计算昨收，不编造默认数值。仅消费收盘序列的 ETF 轮动仍可使用缺量额历史，缺失字段保持 NaN/None，不用于完整量价交易结论。
+
+MA5/10/20 分别要求完整窗口；技术分析拒绝无效收盘/负量或非有限输入。`sample_count` 披露实际样本，RSI24 少于 25 根、MACD 少于 34 根等暖启动限制会标 partial；不改指标计算公式或按分数升级信号。异常/缺失检查进入 `market_data_validation` 和上下文块告警，两个报告渲染入口共用披露。缺乏完整依据时维持观望，不能将单位异常误解释为真实放量。
+
+止损同时检查点位及风控/清单中的命名锚点（今日最低、MA5/10/20/60）。例如“43.00，跌破今日低点止损”与真实最低 45.20 不符时，原文、所报点位、引用锚点和触发文字保存在 `stop_loss_validation`；可执行止损字段标数据缺失，最终观望并提示核查，不擅自改为 45.20。经核对一致的条件止损和独立保护性点位保留。本规则不调整真实持仓或预设风控配置。
+
 回滚：撤销本修复涉及文件的改动即可，无数据库迁移、配置变更或 Secrets 变更。
 
-English: quotes and daily closes now retain separate provenance; unsupported factual claims and conflicting action plans fail conservatively to missing data / Watch. TickFlow quote batches are capped at five, and PushPlus business failures remain failures. This standalone operational note introduces no paired English document or configuration changes.
+English: quotes and daily closes retain separate provenance; unsupported facts, invalid market data and conflicting action plans fail conservatively to missing data / Watch. Efinance CN volumes are normalized from lots to shares once. Quote age remains truthful while session calendars and completeness determine validity; closing quotes can remain valid through market closures. Price/turnover/indicator and named stop-loss anchors are validated without inventing corrections. TickFlow quote batches remain capped at five; PushPlus business failures remain failures. This standalone operational note has no paired English document and introduces no configuration changes.

@@ -53,6 +53,7 @@ def _quote(
         name="贵州茅台",
         source=source,
         price=1880.0,
+        pre_close=1857.71, open_price=1870.0, high=1890.0, low=1850.0, volume=1000000, amount=1880000000,
         change_pct=1.2,
         volume_ratio=1.3,
         turnover_rate=0.5,
@@ -70,7 +71,9 @@ def _artifacts(**overrides) -> PipelineAnalysisArtifacts:
             "code": "600519",
             "stock_name": "贵州茅台",
             "date": "2026-05-24",
-            "today": {"date": "2026-05-24", "close": 1880.0},
+            "today": {"date": "2026-05-24", "close": 1880.0, "open": 1870.0,
+                      "high": 1890.0, "low": 1850.0, "volume": 1000000,
+                      "amount": 1880000000, "pct_chg": 1.08},
             "yesterday": {"date": "2026-05-23", "close": 1860.0},
         },
         "enhanced_context": {
@@ -82,6 +85,7 @@ def _artifacts(**overrides) -> PipelineAnalysisArtifacts:
                 "trend_status": "多头排列",
                 "ma5": 1800.0,
                 "ma10": 1780.0,
+                "ma20": 1760.0,
                 "rsi_6": 66.0,
             }
         ),
@@ -202,7 +206,8 @@ def test_quote_block_ignores_invalid_or_legacy_timestamp_metadata() -> None:
         )
     ).blocks["quote"]
 
-    assert block.status == ContextFieldStatus.AVAILABLE
+    assert block.status == ContextFieldStatus.PARTIAL
+    assert 'quote_missing_volume' in block.warnings
     assert block.timestamp == "2026-05-31T10:00:05+00:00"
     assert block.items["price"].timestamp == "2026-05-31T10:00:05+00:00"
     assert block.metadata["fetched_at"] == "2026-05-31T10:00:05+00:00"

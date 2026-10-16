@@ -59,16 +59,16 @@ def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
                 return default
         
         # 处理 pandas/numpy NaN
-        # 使用 math.isnan 而不是 pd.isna，避免强制依赖 pandas
+        # 使用 math.isfinite 而不是 pd.isna，避免强制依赖 pandas
         import math
         try:
-            if math.isnan(float(val)):
+            if not math.isfinite(float(val)):
                 return default
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
         
         return float(val)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
@@ -124,8 +124,10 @@ class UnifiedRealtimeQuote:
     # === 数据质量元数据（由 DataFetcherManager 统一补齐）===
     fetched_at: Optional[str] = None             # 本系统获取时间（ISO 8601 datetime）
     provider_timestamp: Optional[str] = None     # Provider 真实行情时间（ISO 8601 datetime）
-    is_stale: Optional[bool] = None              # provider_timestamp 超过最小 TTL 阈值时为 True
+    is_stale: Optional[bool] = None              # 按交易时段/日期/完整性判断，未知为 None
     stale_seconds: Optional[int] = None          # provider_timestamp 距 fetched_at 的秒数
+    freshness_status: Optional[str] = None       # fresh/session_close/session_break/stale/unknown
+    validation_issues: Optional[list[str]] = None # 规范单位下的量价/字段异常
     fallback_from: Optional[str] = None          # 整源 fallback 的失败首选源 token
     market: Optional[str] = None                 # 市场标签（cn/hk/us/jp/kr/tw）
     currency: Optional[str] = None               # 报价币种（JPY/KRW/TWD/USD/HKD/CNY 等）
@@ -171,6 +173,7 @@ class UnifiedRealtimeQuote:
         # 只添加非 None 的字段
         optional_fields = [
             'fetched_at', 'provider_timestamp', 'is_stale', 'stale_seconds',
+            'freshness_status', 'validation_issues',
             'fallback_from', 'market', 'currency', 'data_quality', 'missing_fields',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',
@@ -186,7 +189,8 @@ class UnifiedRealtimeQuote:
     
     def has_basic_data(self) -> bool:
         """检查是否有基本的价格数据"""
-        return self.price is not None and self.price > 0
+        price = safe_float(self.price)
+        return price is not None and price > 0
     
     def has_volume_data(self) -> bool:
         """检查是否有量价数据"""

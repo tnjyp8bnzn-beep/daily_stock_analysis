@@ -1056,6 +1056,15 @@ class StockAnalysisPipeline:
                 'name': getattr(realtime_quote, 'name', ''),
                 'price': getattr(realtime_quote, 'price', None),
                 'change_pct': getattr(realtime_quote, 'change_pct', None),
+                'open_price': getattr(realtime_quote, 'open_price', None),
+                'high': getattr(realtime_quote, 'high', None),
+                'low': getattr(realtime_quote, 'low', None),
+                'pre_close': getattr(realtime_quote, 'pre_close', None),
+                'volume': getattr(realtime_quote, 'volume', None),
+                'amount': getattr(realtime_quote, 'amount', None),
+                'data_quality': getattr(realtime_quote, 'data_quality', None),
+                'validation_issues': getattr(realtime_quote, 'validation_issues', None),
+                'freshness_status': getattr(realtime_quote, 'freshness_status', None),
                 'volume_ratio': volume_ratio,
                 'volume_ratio_desc': self._describe_volume_ratio(volume_ratio) if volume_ratio else '无数据',
                 'turnover_rate': getattr(realtime_quote, 'turnover_rate', None),
@@ -1088,6 +1097,7 @@ class StockAnalysisPipeline:
         # 添加趋势分析结果
         if trend_result:
             enhanced['trend_analysis'] = {
+                'sample_count': getattr(trend_result, 'sample_count', None),
                 'trend_status': trend_result.trend_status.value,
                 'ma_alignment': trend_result.ma_alignment,
                 'trend_strength': trend_result.trend_strength,
@@ -1099,11 +1109,16 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                **{key: getattr(trend_result, key, None) for key in (
+                    'rsi_6', 'rsi_12', 'rsi_24', 'macd_dif', 'macd_dea', 'macd_bar',
+                )},
             }
 
         # Issue #234：盘中分析使用实时 OHLC 与趋势 MA 覆盖 today。
         # 防护条件：trend_result.ma5 > 0 表示 MA 计算已成功且数据量充足。
-        if realtime_quote and trend_result and trend_result.ma5 > 0:
+        if (realtime_quote and trend_result and trend_result.ma5 > 0
+                and not getattr(realtime_quote, 'validation_issues', None)
+                and getattr(realtime_quote, 'is_stale', None) is not True):
             price = getattr(realtime_quote, 'price', None)
             if price is not None and price > 0:
                 yesterday_close = None
@@ -1811,6 +1826,7 @@ class StockAnalysisPipeline:
                     'realtime': initial_context.get('realtime_quote') or {},
                     'market_phase_context': market_phase_context or {},
                     'fundamental_context': fundamental_context,
+                    'trend_analysis': initial_context.get('trend_result') or {},
                 }
                 result.market_snapshot = self.analyzer._build_market_snapshot(report_context)
                 apply_report_consistency(result, report_context, initial_context.get('news_context'))
@@ -2770,6 +2786,9 @@ class StockAnalysisPipeline:
         if df is None or df.empty or 'close' not in df.columns:
             return df
         if realtime_quote is None:
+            return df
+        if (getattr(realtime_quote, 'validation_issues', None)
+                or getattr(realtime_quote, 'is_stale', None) is True):
             return df
         price = getattr(realtime_quote, 'price', None)
         if price is None or not (isinstance(price, (int, float)) and price > 0):

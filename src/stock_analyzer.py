@@ -132,6 +132,7 @@ class TrendAnalysisResult:
     signal_score: int = 0            # 综合评分 0-100
     signal_reasons: List[str] = field(default_factory=list)
     risk_factors: List[str] = field(default_factory=list)
+    sample_count: int | None = None  # Observed bars, for indicator warm-up validation
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -139,6 +140,7 @@ class TrendAnalysisResult:
             'trend_status': self.trend_status.value,
             'ma_alignment': self.ma_alignment,
             'trend_strength': self.trend_strength,
+            'sample_count': self.sample_count,
             'ma5': self.ma5,
             'ma10': self.ma10,
             'ma20': self.ma20,
@@ -215,6 +217,7 @@ class StockTrendAnalyzer:
             TrendAnalysisResult 分析结果
         """
         result = TrendAnalysisResult(code=code)
+        result.sample_count = len(df) if df is not None else 0
         
         if df is None or df.empty or len(df) < 20:
             logger.warning(f"{code} 数据不足，无法进行趋势分析")
@@ -224,6 +227,13 @@ class StockTrendAnalyzer:
         # 确保数据按日期排序
         df = df.sort_values('date').reset_index(drop=True)
         
+        # Invalid prices/volume must not create finite-looking technical signals.
+        for column in ('close', 'volume'):
+            values = pd.to_numeric(df[column], errors='coerce')
+            if not np.isfinite(values).all() or (values <= 0 if column == 'close' else values < 0).any():
+                result.risk_factors.append(f'数据异常：{column} 含无效值，无法完成技术分析')
+                return result
+
         # 计算均线
         df = self._calculate_mas(df)
 
