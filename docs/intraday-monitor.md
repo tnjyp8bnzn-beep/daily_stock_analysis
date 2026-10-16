@@ -4,6 +4,8 @@ English summary: an opt-in, always-on, session-aware quote monitor reuses the
 existing providers, AlphaSift screening, portfolio ledger and notification
 channels. Signals are paper observations, never orders or broker fills. The
 optional standalone Backtrader research program has a separate GPL license.
+The explicit intraday Tencent watchlist fetch uses one request while retaining
+the existing shares/yuan normalization and quote freshness gate.
 
 ## 核实后的现状和边界
 
@@ -27,6 +29,21 @@ optional standalone Backtrader research program has a separate GPL license.
 [Backtrader](https://github.com/mementum/backtrader) 仅用于独立离线研究。
 [GitHub schedule](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
 可能排队，不是常驻服务。
+
+实测对比（2026-10-16 盘后，同一测试环境，只测六只股票行情获取）：
+[PanWatch 腾讯批量实现](https://github.com/TNT-Likely/PanWatch/blob/b7afef533830f295efaba5678927f54eb482af68/packages/marketdata/src/marketdata/vendors/tencent.py)
+为 0.8/1.1/1.6 秒；本项目旧逐股腾讯路径为 32.6/33.0 秒；
+本项目新增 HTTPS 批量路径含原有接口限速约 6.2 秒。PanWatch 原始亨通光电成交量
+1,023,074 与本项目按成交额/价格校验的 102,307,400 股相差 100 倍；
+因此仅借鉴其批量请求方式，不接入未标准化的原始量能。盘后报价时间约 16:14，
+这些数字只是抓取耗时，不是盘中行情源延迟或手机提醒到达时间。
+
+免费常驻方案核查：[Oracle Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
+提供免费额度内的虚拟机，但有资源容量限制与闲置实例回收；[Google Cloud 免费层级](https://docs.cloud.google.com/free/docs/free-cloud-features?hl=zh-cn)
+仅在指定美国区域提供 e2-micro，向中国的流量不在其列出的免费出站额度内；
+[Render 免费 Web 服务](https://render.com/docs/free) 在无入站访问 15 分钟后休眠，且本地
+SQLite 文件不持久，不适合持续盯盘。若有现成常开电脑，运行本项目服务最省去新增云费用。
+尚未验证任何服务器到国内行情和 PushPlus 的盘中端到端延迟，不能承诺长期零费用或秒级送达。
 
 ## 启动和真实时效
 

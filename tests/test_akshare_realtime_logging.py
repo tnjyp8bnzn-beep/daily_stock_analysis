@@ -47,6 +47,7 @@ def _make_sina_payload() -> str:
 
 def _make_tencent_payload(
     *,
+    code: str = "601006",
     price: str = "5.19",
     volume: str = "1234",
     amount_triplet: str = "",
@@ -57,7 +58,7 @@ def _make_tencent_payload(
 ) -> str:
     fields = ["0"] * 50
     fields[1] = "大秦铁路"
-    fields[2] = "601006"
+    fields[2] = code
     fields[3] = price
     fields[4] = "5.00"
     fields[5] = "5.10"
@@ -76,7 +77,7 @@ def _make_tencent_payload(
     fields[45] = total_mv_yi
     fields[46] = "1.20"
     fields[49] = "0.63"
-    return f'v_sh601006="{"~".join(fields)}";'
+    return f'v_sh{code}="{"~".join(fields)}";'
 
 
 @pytest.fixture
@@ -175,6 +176,7 @@ def test_tencent_realtime_volume_keeps_share_unit_when_turnover_matches(monkeypa
         lambda *args, **kwargs: _DummyResponse(
             200,
             _make_tencent_payload(
+                code="688691",
                 price="122.70",
                 volume="10931723",
                 amount_triplet="122.70/10931723/1327404280",
