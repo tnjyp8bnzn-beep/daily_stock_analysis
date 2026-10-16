@@ -131,6 +131,10 @@ def run_backtest(quotes, daily, *, evaluate_from, cash=100_000, commission=.0003
     index = pd.DatetimeIndex(stamps).tz_convert(CN).tz_localize(None)
     if index.has_duplicates or not index.is_monotonic_increasing:
         raise ValueError('strictly_increasing_quote_times_required')
+    if any(infer_market_phase('cn', current_time=stamp.to_pydatetime()) not in (
+        MarketPhase.INTRADAY, MarketPhase.CLOSING_AUCTION,
+    ) for stamp in stamps):
+        raise ValueError('regular_session_quotes_required')
     numeric = frame[['price', 'upper_limit', 'lower_limit', 'suspended']].apply(pd.to_numeric, errors='coerce')
     if (numeric.isna().any().any() or not numeric['suspended'].isin([0, 1]).all()
             or (numeric[['price', 'upper_limit', 'lower_limit']] <= 0).any().any()

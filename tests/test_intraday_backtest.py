@@ -95,3 +95,10 @@ def test_times_must_be_zoned_and_ordered():
         run_backtest(frame, daily(), evaluate_from='2026-10-16')
     with pytest.raises(ValueError, match='strictly_increasing'):
         run_backtest(quotes().iloc[::-1], daily(), evaluate_from='2026-10-16')
+
+
+def test_after_hours_samples_cannot_fill_pending_orders():
+    frame = quotes()
+    frame.loc[5, 'timestamp'] = datetime(2026, 10, 19, 16, 14, tzinfo=CN).isoformat()
+    with pytest.raises(ValueError, match='regular_session_quotes_required'):
+        run_backtest(frame, daily(), evaluate_from='2026-10-16')
